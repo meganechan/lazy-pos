@@ -167,7 +167,9 @@ async function ticketDetail(id, storeId) {
 }
 
 const app = express();
-app.use(express.json());
+// Capture the raw request body so the Beam webhook receiver can verify the
+// HMAC signature over the exact bytes (express.json() otherwise discards them).
+app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
 
 // ---- auth middleware ----
 // requireAuth: resolve Bearer token → req.user. Missing/invalid → 401.
@@ -318,6 +320,78 @@ app.post('/api/auth/signup', async (req, res) => {
   res.json({ ok: true, store: { id: store.id, code: store.code, name: store.name } });
 });
 
+// ---- Beam Bolt webhook receiver (PUBLIC — no session) ----
+// MUST be registered BEFORE the `app.use('/api', requireAuth)` gate below, since
+// Beam calls this server-to-server with no app session. Authenticity is enforced
+// via the HMAC signature (X-Beam-Signature) instead. PoC with no webhook secret
+// configured -> signature check is skipped (warn + proceed).
+app.post('/api/webhooks/beam', async (req, res) => {
+  const event = req.headers['x-beam-event'];
+  const sig = req.headers['x-beam-signature'];
+
+  const { verified, skipped } = beamBoltAdapter.verifyWebhookSignature(
+    req.rawBody, sig);
+  if (verified === false && !skipped) {
+    return res.status(401).json({ error: 'invalid signature' });
+  }
+  if (skipped) {
+    console.warn('[beam webhook] BEAM_WEBHOOK_SECRET not set — signature NOT verified (PoC)');
+  }
+
+  const body = req.body || {};
+
+  // Classify the terminal outcome from event name + body fields. Beam may send
+  // any of: a typed event (X-Beam-Event), a `result` enum, or a `status` field.
+  const PAID =
+    event === 'bolt_intent.paid' ||
+    body.result === 'CH_SUCCEEDED' ||
+    body.status === 'PAID';
+  const FAILED =
+    event === 'bolt_intent.canceled' ||
+    event === 'bolt_intent.expired' ||
+    body.status === 'CANCELED' ||
+    body.status === 'EXPIRED';
+
+  // Locate the payment row: primary key is beam_charge_id (the Bolt Intent id we
+  // stored at creation). Fallback: parse referenceId 'tkt-<id>-pay-<pid>'.
+  let p = null;
+  if (body.id) {
+    p = (await q(
+      `SELECT p.*, t.store_id AS store_id
+         FROM payment p JOIN ticket t ON t.id = p.ticket_id
+        WHERE p.beam_charge_id=$1`,
+      [body.id])).rows[0] || null;
+  }
+  if (!p && typeof body.referenceId === 'string') {
+    const m = body.referenceId.match(/^tkt-(\d+)-pay-(\d+)$/);
+    if (m) {
+      p = (await q(
+        `SELECT p.*, t.store_id AS store_id
+           FROM payment p JOIN ticket t ON t.id = p.ticket_id
+          WHERE p.id=$1 AND p.ticket_id=$2`,
+        [m[2], m[1]])).rows[0] || null;
+    }
+  }
+
+  let newStatus = null;
+  if (p) {
+    if (PAID) newStatus = 'success';
+    else if (FAILED) newStatus = 'failed';
+    if (newStatus) {
+      await q(`UPDATE payment SET status=$2 WHERE id=$1`, [p.id, newStatus]);
+    }
+    await audit(null, p.store_id, 'bolt_webhook', 'payment', p.id,
+      { event: event || null, result: body.result || null, status: body.status || null,
+        new_status: newStatus, skipped: !!skipped });
+  } else {
+    await audit(null, null, 'bolt_webhook', 'payment', body.id || null,
+      { event: event || null, result: body.result || null, status: body.status || null,
+        matched: false, skipped: !!skipped });
+  }
+
+  res.status(200).json({ received: true });
+});
+
 // ---- AUTH GATE: everything below /api/* requires a valid session ----
 app.use('/api', requireAuth);
 
@@ -325,6 +399,51 @@ app.use('/api', requireAuth);
 app.post('/api/auth/logout', (req, res) => {
   destroySession(req.user.token);
   res.json({ ok: true });
+});
+
+// ---- Beam Bolt device pairing (PAIRING mode setup) ----
+// Pair a physical EDC terminal to this store. Owner-only. Stores the returned
+// Bolt connection + device ids on the store row; reused as boltConnectionId on
+// every PAIRING bolt-intent. Audits 'bolt_pair'.
+app.post('/api/bolt/pair', requireOwner, async (req, res) => {
+  const pairingCode =
+    typeof req.body?.pairingCode === 'string' ? req.body.pairingCode.trim() : '';
+  if (!pairingCode)
+    return res.status(400).json({ error: 'pairingCode is required' });
+
+  let result;
+  try {
+    result = await beamBoltAdapter.pairDevice({ pairingCode });
+  } catch (e) {
+    return res.status(502).json({ error: String(e.message || e) });
+  }
+
+  await q(
+    `UPDATE store SET bolt_connection_id=$2, bolt_device_id=$3 WHERE id=$1`,
+    [req.user.storeId, result.boltConnectionId, result.deviceId]);
+
+  await audit(req.user.id, req.user.storeId, 'bolt_pair', 'store', req.user.storeId,
+    { boltConnectionId: result.boltConnectionId, deviceId: result.deviceId,
+      mock: !!result.mock });
+
+  res.json({
+    paired: true,
+    boltConnectionId: result.boltConnectionId,
+    deviceId: result.deviceId,
+    mock: !!result.mock,
+  });
+});
+
+// Report this store's Bolt pairing status (any authed user).
+app.get('/api/bolt/connection', async (req, res) => {
+  const s = (await q(
+    'SELECT bolt_connection_id, bolt_device_id FROM store WHERE id=$1',
+    [req.user.storeId])).rows[0] || {};
+  res.json({
+    paired: !!s.bolt_connection_id,
+    boltConnectionId: s.bolt_connection_id || null,
+    deviceId: s.bolt_device_id || null,
+  });
 });
 
 // ---- OWNER-ONLY: user management ----
@@ -887,6 +1006,21 @@ app.post('/api/tickets/:id/bolt-intent', requireAuth, async (req, res) => {
   const ticket = await ticketDetail(req.params.id, req.user.storeId);
   if (!ticket) return res.status(404).json({ error: 'not found' });
 
+  // Load this store's Bolt pairing so we can default the mode and supply the
+  // boltConnectionId for PAIRING (physical EDC) intents.
+  const store = (await q(
+    'SELECT bolt_connection_id FROM store WHERE id=$1',
+    [req.user.storeId])).rows[0] || {};
+
+  // mode: explicit body.mode wins; else PAIRING when paired, DEEP_LINK otherwise.
+  const mode =
+    req.body?.mode || (store.bolt_connection_id ? 'PAIRING' : 'DEEP_LINK');
+
+  // PAIRING requires a paired terminal — fail BEFORE persisting any row.
+  if (mode === 'PAIRING' && !store.bolt_connection_id) {
+    return res.status(400).json({ error: 'ร้านยังไม่ได้ pair เครื่องรูดบัตร' });
+  }
+
   const amount =
     req.body?.amount ?? (Number(ticket.total) - Number(ticket.paid)) ?? ticket.total;
 
@@ -906,9 +1040,13 @@ app.post('/api/tickets/:id/bolt-intent', requireAuth, async (req, res) => {
   let intent;
   try {
     intent = await beamBoltAdapter.createBoltIntent({
+      mode,
       amountBaht: amount,
       referenceId: 'tkt-' + req.params.id + '-pay-' + p.id,
-      redirectUrl:
+      boltConnectionId: store.bolt_connection_id,
+      // PAIRING (EDC device) accepts card OR an on-device QR — client picks via paymentMethodType.
+      paymentMethodType: req.body?.paymentMethodType,
+      returnUrl:
         (process.env.PUBLIC_BASE_URL || 'http://localhost:8090') +
         '/?ticket=' + req.params.id,
       idempotencyKey: key,
@@ -919,14 +1057,17 @@ app.post('/api/tickets/:id/bolt-intent', requireAuth, async (req, res) => {
   }
 
   // PoC: reuse the beam_charge_id column to store the Bolt Intent id so the
-  // poll endpoint can recover it without a schema change.
+  // poll endpoint (and webhook) can recover it without a schema change.
   await q(`UPDATE payment SET beam_charge_id=$2 WHERE id=$1`,
     [p.id, intent.boltIntentId || null]);
 
   res.json({
     payment_id: p.id,
     boltIntentId: intent.boltIntentId,
-    deepLink: intent.deepLink,
+    deepLinkUrl: intent.deepLinkUrl,
+    mode: intent.mode,
+    // echo so the client panel can tell card-on-device vs QR-on-device (PAIRING)
+    paymentMethodType: intent.paymentMethodType || (req.body?.paymentMethodType),
     mock: !!intent.mock,
   });
 });

@@ -997,8 +997,10 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   const [busy, setBusy] = useState(false)
   const [edcStep, setEdcStep] = useState(false) // showing EDC simulate buttons
   const [payFail, setPayFail] = useState(false) // EDC failed -> show fallback
-  const [bolt, setBolt] = useState(null) // Beam Bolt deep-link PoC panel: { payment_id, boltIntentId, deepLink, mock } | null
+  const [bolt, setBolt] = useState(null) // Beam Bolt PoC panel: { payment_id, boltIntentId, deepLinkUrl, mode, mock } | null
   const [boltErr, setBoltErr] = useState('') // inline Bolt failure message (failure enum)
+  const [boltPaired, setBoltPaired] = useState(false) // shop has a paired EDC device → default PAIRING + offer QR fallback
+  const [boltNotPaired, setBoltNotPaired] = useState(false) // create returned 400 ร้านยังไม่ได้ pair → owner-must-pair hint
   const [priceEdits, setPriceEdits] = useState({}) // itemId -> string
   const [minutesEdits, setMinutesEdits] = useState({}) // itemId -> string
   const [optSel, setOptSel] = useState({}) // itemId -> { [optionId]: true } selected add-ons
@@ -1034,6 +1036,8 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
     api.ticket(id).then(setT).catch(() => flash('โหลดบิลไม่สำเร็จ'))
     api.services().then(setServices).catch(() => setServices([]))
     api.authUsers().then(setTechs).catch(() => setTechs([]))
+    // know if this shop has a paired EDC device → drives default Bolt mode (PAIRING) + QR fallback offer
+    api.boltConnection().then((c) => setBoltPaired(!!(c && c.paired))).catch(() => setBoltPaired(false))
   }, [id])
 
   // Beam Bolt PoC — real mode auto-poll every ~2.5s while the panel is open.
@@ -1247,12 +1251,29 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
     BI_CANCELED: 'ลูกค้ายกเลิกการชำระเงิน',
   }
 
-  const startBolt = () => {
+  // start a Bolt intent in a given mode.
+  //  PAIRING   → รูดบัตรที่เครื่อง EDC (no link); requires the shop be paired.
+  //  DEEP_LINK → QR PromptPay link on the customer's phone.
+  // Omitting mode lets the server pick (PAIRING when paired else DEEP_LINK).
+  const startBolt = (mode, paymentMethodType) => {
     setBusy(true)
     setBoltErr('')
-    api.createBoltIntent(id, { amount: outstanding })
+    setBoltNotPaired(false)
+    const body = { amount: outstanding }
+    if (mode) body.mode = mode
+    // PAIRING (EDC device) can take card OR an on-device QR; pass the chosen method.
+    if (paymentMethodType) body.paymentMethodType = paymentMethodType
+    api.createBoltIntent(id, body)
       .then((d) => { setBolt(d); setBusy(false) })
-      .catch((e) => { setBusy(false); flash('สร้างลิงก์ Bolt ไม่สำเร็จ: ' + e.message) })
+      .catch((e) => {
+        setBusy(false)
+        // PAIRING requested but shop has no paired device → friendly owner-must-pair hint
+        if (e.status === 400 && e.body && e.body.error === 'ร้านยังไม่ได้ pair เครื่องรูดบัตร') {
+          setBoltNotPaired(true)
+          return
+        }
+        flash('สร้างรายการ Bolt ไม่สำเร็จ: ' + e.message)
+      })
   }
 
   // apply a poll result: success → ticket paid; failure → inline error + retry; '' → keep waiting
@@ -1279,8 +1300,8 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
       .catch((e) => { setBusy(false); flash('จำลองไม่สำเร็จ: ' + e.message) })
   }
 
-  const cancelBolt = () => { setBolt(null); setBoltErr('') }
-  const retryBolt = () => { setBolt(null); setBoltErr(''); startBolt() }
+  const cancelBolt = () => { setBolt(null); setBoltErr(''); setBoltNotPaired(false) }
+  const retryBolt = () => { const mode = bolt && bolt.mode; const pm = bolt && bolt.paymentMethodType; setBolt(null); setBoltErr(''); startBolt(mode, pm) }
 
   const closeBill = () => {
     setBusy(true)
@@ -1520,27 +1541,48 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
           {!readOnly && !isPaid && (
             bolt ? (
               <div className="card">
-                <div className="center" style={{ fontSize: 32 }}>💳</div>
-                <div className="center" style={{ fontWeight: 700 }}>สแกน/เปิดแอป Beam Bolt เพื่อชำระ</div>
-                <div className="center muted" style={{ marginBottom: 12 }}>
-                  ยอดชำระ {baht(outstanding)}
-                  {bolt.mock && <span className="badge" style={{ marginLeft: 8 }}>MOCK</span>}
-                </div>
+                {(() => {
+                  // active mode drives the panel header + body. DEEP_LINK shows the
+                  // QR PromptPay link; PAIRING shows "รูดบัตรที่เครื่อง EDC" (no link).
+                  const isDeepLink = bolt.mode === 'DEEP_LINK'
+                  const isQrOnDevice = bolt.mode === 'PAIRING' && bolt.paymentMethodType === 'QR_PROMPT_PAY'
+                  const header = isDeepLink ? '📱 สแกน QR PromptPay (มือถือ)'
+                    : isQrOnDevice ? '💳 สแกน QR บนเครื่อง EDC…'
+                    : '💳 กรุณารูดบัตรที่เครื่อง EDC…'
+                  return (
+                    <>
+                      <div className="center" style={{ fontSize: 32 }}>{isDeepLink ? '📱' : '💳'}</div>
+                      <div className="center" style={{ fontWeight: 700 }}>{header}</div>
+                      <div className="center muted" style={{ marginBottom: 12 }}>
+                        ยอดชำระ {baht(outstanding)}
+                        {bolt.mock && <span className="badge" style={{ marginLeft: 8 }}>MOCK</span>}
+                      </div>
 
-                <div className="btn-row">
-                  <a
-                    className="btn"
-                    href={bolt.deepLink}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{ textAlign: 'center', textDecoration: 'none' }}
-                  >
-                    📲 เปิดแอป Bolt
-                  </a>
-                </div>
-                <div className="center muted" style={{ fontSize: 12, wordBreak: 'break-all', margin: '4px 0 12px' }}>
-                  intent: {bolt.boltIntentId}
-                </div>
+                      {isDeepLink ? (
+                        <>
+                          <div className="btn-row">
+                            <a
+                              className="btn"
+                              href={bolt.deepLinkUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              style={{ textAlign: 'center', textDecoration: 'none' }}
+                            >
+                              📲 เปิด/สแกน QR PromptPay
+                            </a>
+                          </div>
+                          <div className="center muted" style={{ fontSize: 12, wordBreak: 'break-all', margin: '4px 0 12px' }}>
+                            intent: {bolt.boltIntentId}
+                          </div>
+                        </>
+                      ) : (
+                        <div className="center muted" style={{ fontSize: 12, wordBreak: 'break-all', margin: '4px 0 12px' }}>
+                          รอผลที่เครื่องรูดบัตร · intent: {bolt.boltIntentId}
+                        </div>
+                      )}
+                    </>
+                  )
+                })()}
 
                 {boltErr ? (
                   <>
@@ -1605,6 +1647,18 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
                   </div>
                 </div>
               </div>
+            ) : boltNotPaired ? (
+              <div className="card">
+                <div className="center" style={{ fontSize: 28 }}>💳</div>
+                <div className="center" style={{ fontWeight: 700 }}>ยังไม่ได้จับคู่เครื่องรูดบัตร</div>
+                <div className="note-warn" style={{ marginTop: 8 }}>
+                  ⚠️ เจ้าของร้านต้อง pair เครื่อง EDC ก่อน (ที่หน้า “ผู้ใช้”) จึงจะรับชำระแบบรูดบัตรที่เครื่องได้
+                </div>
+                <div className="btn-row">
+                  <button className="btn" disabled={busy} onClick={() => startBolt('DEEP_LINK')}>📱 ใช้ QR (มือถือ) แทน</button>
+                  <button className="btn ghost" disabled={busy} onClick={() => setBoltNotPaired(false)}>ปิด</button>
+                </div>
+              </div>
             ) : (
               <div className="pay-grid">
                 <div className="pay" onClick={() => doPay('cash')}>
@@ -1616,10 +1670,27 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
                   <div className="ico">💳</div>
                   <div className="grow"><div>บัตร (Beam EDC)</div><div className="desc">รูดบัตรเครดิต/เดบิต</div></div>
                 </div>
-                <div className="pay" onClick={startBolt}>
-                  <div className="ico">💳</div>
-                  <div className="grow"><div>บัตร (Beam Bolt · Deep Link) [PoC]</div><div className="desc">เปิดแอป Bolt เพื่อชำระ</div></div>
-                </div>
+                {boltPaired ? (
+                  <>
+                    <div className="pay" onClick={() => startBolt('PAIRING', 'CARD')}>
+                      <div className="ico">💳</div>
+                      <div className="grow"><div>รูดบัตรที่เครื่อง (Beam EDC) [PoC]</div><div className="desc">เครื่องที่จับคู่ไว้ — เสียบ/แตะบัตร</div></div>
+                    </div>
+                    <div className="pay" onClick={() => startBolt('PAIRING', 'QR_PROMPT_PAY')}>
+                      <div className="ico">💳</div>
+                      <div className="grow"><div>QR ที่เครื่อง (Beam EDC) [PoC]</div><div className="desc">โชว์ QR PromptPay บนเครื่อง EDC</div></div>
+                    </div>
+                    <div className="pay" onClick={() => startBolt('DEEP_LINK')}>
+                      <div className="ico">📱</div>
+                      <div className="grow"><div>QR (มือถือ) · PromptPay [PoC]</div><div className="desc">ให้ลูกค้าสแกน QR บนมือถือ</div></div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="pay" onClick={() => startBolt('DEEP_LINK')}>
+                    <div className="ico">📱</div>
+                    <div className="grow"><div>บัตร (Beam Bolt · QR มือถือ) [PoC]</div><div className="desc">สแกน QR PromptPay เพื่อชำระ</div></div>
+                  </div>
+                )}
                 <div className="pay" onClick={() => doPay('unpaid')}>
                   <div className="ico">🕓</div>
                   <div className="grow"><div>ค้างชำระ</div><div className="desc">Unpaid</div></div>
@@ -1980,6 +2051,93 @@ function Login({ onLoggedIn }) {
 }
 
 /* ───────────────────────── Users (owner) ───────────────────────── */
+/* ── Beam Bolt device pairing (owner, on the Users page) ──
+   Load this shop's connection status, then let the owner pair the EDC device by
+   typing the 8-character code shown on the device screen. Mock backend returns
+   boltConnectionId "boltc_mock". */
+function BoltPairing({ flash, canManage }) {
+  const [conn, setConn] = useState(null) // null=loading | { paired, boltConnectionId, deviceId }
+  const [code, setCode] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+
+  const load = () => api.boltConnection()
+    .then(setConn)
+    .catch(() => setConn({ paired: false }))
+  useEffect(() => { load() }, [])
+
+  const pair = () => {
+    const c = code.trim()
+    if (c.length !== 8) { setErr('กรุณากรอกรหัสจับคู่ 8 หลักจากหน้าจอเครื่องรูดบัตร'); return }
+    setBusy(true)
+    setErr('')
+    api.pairBolt(c)
+      .then((d) => {
+        setBusy(false)
+        setCode('')
+        setConn({ paired: !!d.paired, boltConnectionId: d.boltConnectionId, deviceId: d.deviceId })
+        flash && flash('จับคู่เครื่องรูดบัตรสำเร็จ')
+      })
+      .catch((e) => {
+        setBusy(false)
+        setErr(e.status === 403 ? e.message : (e.message || 'จับคู่ไม่สำเร็จ'))
+      })
+  }
+
+  const paired = conn && conn.paired
+
+  return (
+    <div className="card" style={{ marginBottom: 16 }}>
+      <div className="row">
+        <div className="grow">
+          <div className="name" style={{ fontSize: 16 }}>💳 เครื่องรูดบัตร (Beam Bolt)</div>
+          <div className="meta">จับคู่เครื่อง EDC เพื่อรับชำระแบบรูดบัตรที่เครื่อง</div>
+        </div>
+        {conn == null ? (
+          <span className="badge pending">…</span>
+        ) : paired ? (
+          <span className="badge done">✓ จับคู่แล้ว</span>
+        ) : (
+          <span className="badge closed">ยังไม่ได้ pair</span>
+        )}
+      </div>
+
+      {conn != null && paired && (
+        <div className="meta" style={{ marginTop: 8 }}>
+          อุปกรณ์: <b>{conn.deviceId || '-'}</b>
+          {conn.boltConnectionId && <> · connection: <span style={{ wordBreak: 'break-all' }}>{conn.boltConnectionId}</span></>}
+        </div>
+      )}
+
+      {!canManage ? (
+        <div className="meta" style={{ marginTop: 10 }}>📱 เปิดบน iPad/คอมเพื่อจับคู่เครื่อง</div>
+      ) : (
+        <>
+          <label style={{ marginTop: 12 }}>รหัสจับคู่ (8 หลักจากหน้าจอเครื่อง)</label>
+          <div className="row">
+            <input
+              value={code}
+              maxLength={8}
+              onChange={(e) => setCode(e.target.value.toUpperCase())}
+              placeholder="เช่น A1B2C3D4"
+              style={{ letterSpacing: 2, fontVariantNumeric: 'tabular-nums' }}
+            />
+            <button
+              className="btn"
+              style={{ width: 'auto', padding: '12px 18px' }}
+              disabled={busy || code.trim().length !== 8}
+              onClick={pair}
+            >
+              {busy ? 'กำลัง pair...' : (paired ? 'Pair ใหม่' : 'Pair เครื่อง')}
+            </button>
+          </div>
+          {err && <div className="note-warn" style={{ marginTop: 8 }}>⚠️ {err}</div>}
+        </>
+      )}
+    </div>
+  )
+}
+
 function Users({ flash, onNewUser, onEditUser, canManage, ownerPhone, wide }) {
   const [list, setList] = useState(null)
 
@@ -1993,6 +2151,7 @@ function Users({ flash, onNewUser, onEditUser, canManage, ownerPhone, wide }) {
   if (wide && canManage) {
     return (
       <>
+        <BoltPairing flash={flash} canManage={canManage} />
         <div className="btn-row" style={{ marginTop: 0, marginBottom: 12 }}>
           <button className="btn" style={{ width: 'auto', padding: '12px 18px' }} onClick={onNewUser}>➕ เพิ่มผู้ใช้ใหม่</button>
         </div>
@@ -2025,6 +2184,7 @@ function Users({ flash, onNewUser, onEditUser, canManage, ownerPhone, wide }) {
   // owner-phone read-only OR fallback list view
   return (
     <>
+      <BoltPairing flash={flash} canManage={canManage} />
       {ownerPhone ? (
         <ManageHint />
       ) : (
