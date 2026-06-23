@@ -44,6 +44,11 @@ as **owner**.
 | 35 | `35-owner-ipad-dashboard.png` | owner iPad — wide 4-across KPI dashboard |
 | 36 | `36-owner-desktop-services-table.png` | owner desktop (1280) — Services table + แก้ราคา |
 | 37 | `37-owner-desktop-audit-table.png` | owner desktop — Audit log table + filters |
+| 38 | `38-services-crud-table.png` | Services CRUD table (owner desktop) — add/แก้ไข/ลบ + inactive badge (v0.7) |
+| 39 | `39-service-edit-form.png` | Service edit form — name/category/price/time/description/active |
+| 40 | `40-service-detail-addons.png` | Service detail — description + add-on options manager |
+| 41 | `41-ticket-option-select.png` | Ticket item — add-on checkbox folds +฿/+min into price/time |
+| 42 | `42-owner-iphone-services-readonly.png` | owner iPhone — services read-only + manage hint |
 
 > **RBAC (v0.4)**: PIN login per user (scrypt-hashed — separate from the SACRED
 > idempotency hash), in-memory session token sent as `Authorization: Bearer`.
@@ -63,6 +68,13 @@ as **owner**.
 > Users/Audit/Services, 4-across dashboard, full actions); owner <768 = read-only
 > summary (all mutate controls hidden + "เปิดบน iPad/คอม" hint). Server RBAC is
 > unchanged — viewport is UX only, not a security boundary.
+>
+> **Services CRUD + add-ons (v0.7)**: owner can create/edit/delete services (all fields
+> + description) and manage per-service add-on options (price_delta/minute_delta) in a
+> detail view. Delete is smart (Nothing is Deleted): a service used in any ticket is
+> soft-deleted (active=false, hidden from the menu) while an unused one is hard-deleted.
+> On a ticket, ticking an add-on folds its +฿/+min into the item's quoted_price/minutes.
+> Owner-only (server-enforced); managed on large screens, read-only on phone.
 >
 > Payment is decoupled from closing the sale (spec §1): EDC failure offers
 > cash / unpaid fallback so a ticket never gets stuck. Beam & LINE are mocked

@@ -469,12 +469,27 @@ function Services({ flash, isOwner, canManage, ownerPhone, wide }) {
   const [list, setList] = useState(null)
   const [edits, setEdits] = useState({}) // serviceId -> string price
   const [busy, setBusy] = useState(false)
+  const [nav, setNav] = useState(null) // null | {kind:'new'} | {kind:'edit',s} | {kind:'detail',id}
 
-  const load = () => api.services().then(setList).catch(() => setList([]))
-  useEffect(() => { load() }, [])
+  // owner-large management loads ALL services (active+inactive); others load active only
+  const manageMode = wide && canManage
+  const load = () => api.services(manageMode).then(setList).catch(() => setList([]))
+  useEffect(() => { load() }, [manageMode])
+
+  // sub-views (owner-large only)
+  if (manageMode && nav) {
+    if (nav.kind === 'new') {
+      return <ServiceForm flash={flash} categories={catNames(list || [])} onCancel={() => setNav(null)} onDone={() => { setNav(null); load() }} />
+    }
+    if (nav.kind === 'edit') {
+      return <ServiceForm flash={flash} s={nav.s} categories={catNames(list || [])} onCancel={() => setNav(null)} onDone={() => { setNav(null); load() }} />
+    }
+    if (nav.kind === 'detail') {
+      return <ServiceDetail id={nav.id} flash={flash} onBack={() => { setNav(null); load() }} onEdit={(s) => setNav({ kind: 'edit', s })} />
+    }
+  }
 
   if (!list) return <Loading />
-  if (list.length === 0) return <div className="empty"><div className="big">💅</div>ยังไม่มีบริการ</div>
 
   const commitPrice = (s) => {
     const raw = edits[s.id]
@@ -495,51 +510,103 @@ function Services({ flash, isOwner, canManage, ownerPhone, wide }) {
       .catch((e) => { setBusy(false); flash && flash(e.status === 403 ? e.message : 'แก้ราคาไม่สำเร็จ: ' + e.message) })
   }
 
-  const cats = groupByCat(list)
+  const removeService = (s) => {
+    if (typeof window !== 'undefined' && !window.confirm('ลบบริการ "' + s.name + '" ?')) return
+    setBusy(true)
+    api.deleteService(s.id)
+      .then((d) => load().then(() => {
+        setBusy(false)
+        if (d && d.mode === 'soft') flash && flash('บริการนี้มีประวัติการใช้ → ปิดการใช้งานแทนการลบ')
+        else flash && flash('ลบบริการแล้ว')
+      }))
+      .catch((e) => { setBusy(false); flash && flash(e.status === 403 ? e.message : 'ลบไม่สำเร็จ: ' + e.message) })
+  }
 
-  // owner + large → management table with inline price edit
-  if (wide && canManage) {
+  // owner + large → management table with inline price edit + full CRUD
+  if (manageMode) {
     return (
-      <table className="data-table">
-        <thead>
-          <tr>
-            <th>บริการ</th>
-            <th>หมวด</th>
-            <th className="num">เวลา (นาที)</th>
-            <th className="num">ราคา (บาท)</th>
-            <th className="act">จัดการ</th>
-          </tr>
-        </thead>
-        <tbody>
-          {list.map((s) => (
-            <tr key={s.id}>
-              <td className="strong">{s.name}</td>
-              <td>{s.category || 'อื่นๆ'}</td>
-              <td className="num">{N(s.duration_min)}</td>
-              <td className="num">
-                <input
-                  className="cell-input"
-                  type="number"
-                  value={edits[s.id] !== undefined ? edits[s.id] : String(N(s.base_price))}
-                  onChange={(e) => setEdits((p) => ({ ...p, [s.id]: e.target.value }))}
-                />
-              </td>
-              <td className="act">
-                <button
-                  className="btn secondary"
-                  style={{ width: 'auto', padding: '8px 14px' }}
-                  disabled={busy || edits[s.id] === undefined}
-                  onClick={() => commitPrice(s)}
-                >
-                  แก้ราคา
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <>
+        <div className="btn-row" style={{ marginTop: 0, marginBottom: 12 }}>
+          <button className="btn" style={{ width: 'auto', padding: '12px 18px' }} onClick={() => setNav({ kind: 'new' })}>➕ เพิ่มบริการ</button>
+        </div>
+        {list.length === 0 ? (
+          <div className="empty"><div className="big">💅</div>ยังไม่มีบริการ</div>
+        ) : (
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>บริการ</th>
+                <th>หมวด</th>
+                <th className="num">เวลา (นาที)</th>
+                <th className="num">ราคา (บาท)</th>
+                <th className="act">จัดการ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {list.map((s) => {
+                const inactive = s.active === false
+                const nOpt = (s.options || []).length
+                return (
+                  <tr key={s.id} style={{ cursor: 'pointer' }}>
+                    <td
+                      className="strong"
+                      onClick={() => setNav({ kind: 'detail', id: s.id })}
+                      style={inactive ? { color: 'var(--muted)', textDecoration: 'line-through' } : undefined}
+                    >
+                      {s.name}
+                      {inactive && <span className="badge closed" style={{ marginLeft: 8 }}>ปิดใช้งาน</span>}
+                      {nOpt > 0 && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6, marginLeft: 6 }}>+{nOpt} add-on</span>}
+                    </td>
+                    <td onClick={() => setNav({ kind: 'detail', id: s.id })}>{s.category || 'อื่นๆ'}</td>
+                    <td className="num" onClick={() => setNav({ kind: 'detail', id: s.id })}>{N(s.duration_min)}</td>
+                    <td className="num">
+                      <input
+                        className="cell-input"
+                        type="number"
+                        value={edits[s.id] !== undefined ? edits[s.id] : String(N(s.base_price))}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => setEdits((p) => ({ ...p, [s.id]: e.target.value }))}
+                      />
+                    </td>
+                    <td className="act">
+                      <button
+                        className="btn secondary"
+                        style={{ width: 'auto', padding: '8px 12px', marginRight: 6 }}
+                        disabled={busy || edits[s.id] === undefined}
+                        onClick={(e) => { e.stopPropagation(); commitPrice(s) }}
+                      >
+                        แก้ราคา
+                      </button>
+                      <button
+                        className="btn ghost"
+                        style={{ width: 'auto', padding: '8px 12px', marginRight: 6 }}
+                        disabled={busy}
+                        onClick={(e) => { e.stopPropagation(); setNav({ kind: 'edit', s }) }}
+                      >
+                        แก้ไข
+                      </button>
+                      <button
+                        className="btn ghost"
+                        style={{ width: 'auto', padding: '8px 12px' }}
+                        disabled={busy}
+                        onClick={(e) => { e.stopPropagation(); removeService(s) }}
+                      >
+                        ลบ
+                      </button>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        )}
+      </>
     )
   }
+
+  // owner-phone (read-only) + staff fallback: grouped read-only list
+  if (list.length === 0) return <div className="empty"><div className="big">💅</div>ยังไม่มีบริการ</div>
+  const cats = groupByCat(list)
 
   return (
     <>
@@ -548,34 +615,205 @@ function Services({ flash, isOwner, canManage, ownerPhone, wide }) {
         <div key={cat}>
           <div className="section-title">{cat}</div>
           {cats[cat].map((s) => (
-            <div className="svc" key={s.id} style={canManage ? { flexWrap: 'wrap' } : undefined}>
+            <div className="svc" key={s.id}>
               <div className="grow">
                 <span className="name" style={{ fontWeight: 600 }}>{s.name}</span>
                 <div className="meta" style={{ fontSize: 13, color: 'var(--muted)' }}>{N(s.duration_min)} นาที</div>
               </div>
-              {canManage ? (
-                <div className="row" style={{ width: '100%', marginTop: 8 }}>
-                  <input
-                    type="number"
-                    value={edits[s.id] !== undefined ? edits[s.id] : String(N(s.base_price))}
-                    onChange={(e) => setEdits((p) => ({ ...p, [s.id]: e.target.value }))}
-                  />
-                  <button
-                    className="btn secondary"
-                    style={{ width: 'auto', padding: '8px 14px' }}
-                    disabled={busy || edits[s.id] === undefined}
-                    onClick={() => commitPrice(s)}
-                  >
-                    แก้ราคา
-                  </button>
-                </div>
-              ) : (
-                <div className="price">{baht(s.base_price)}</div>
-              )}
+              <div className="price">{baht(s.base_price)}</div>
             </div>
           ))}
         </div>
       ))}
+    </>
+  )
+}
+
+/* Service add/edit form (owner-large) */
+function ServiceForm({ flash, s, categories, onDone, onCancel }) {
+  const editing = !!s
+  const [name, setName] = useState(s ? (s.name || '') : '')
+  const [category, setCategory] = useState(s ? (s.category || '') : '')
+  const [basePrice, setBasePrice] = useState(s ? String(N(s.base_price)) : '')
+  const [durationMin, setDurationMin] = useState(s ? String(N(s.duration_min)) : '')
+  const [description, setDescription] = useState(s ? (s.description || '') : '')
+  const [active, setActive] = useState(s ? s.active !== false : true)
+  const [saving, setSaving] = useState(false)
+
+  const save = () => {
+    if (!name.trim()) { flash('กรุณากรอกชื่อบริการ'); return }
+    setSaving(true)
+    const body = {
+      name: name.trim(),
+      category: category.trim() || undefined,
+      base_price: N(basePrice),
+      duration_min: durationMin === '' ? undefined : N(durationMin),
+      description: description.trim() || undefined,
+      active,
+    }
+    const req = editing ? api.updateService(s.id, body) : api.createService(body)
+    req
+      .then(() => { flash(editing ? 'บันทึกการแก้ไขแล้ว' : 'เพิ่มบริการสำเร็จ'); onDone() })
+      .catch((e) => { setSaving(false); flash(e.status === 403 ? e.message : 'ผิดพลาด: ' + e.message) })
+  }
+
+  return (
+    <div className="card">
+      <label>ชื่อบริการ *</label>
+      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="เช่น ทาเจลสีพื้น" />
+
+      <label>หมวด</label>
+      <input list="svc-cat-list" value={category} onChange={(e) => setCategory(e.target.value)} placeholder="เช่น เจล, ต่อเล็บ, สปา" />
+      <datalist id="svc-cat-list">
+        {(categories || []).map((c) => <option key={c} value={c} />)}
+      </datalist>
+
+      <label>ราคา (บาท)</label>
+      <input type="number" value={basePrice} onChange={(e) => setBasePrice(e.target.value)} placeholder="0" />
+
+      <label>เวลา (นาที)</label>
+      <input type="number" value={durationMin} onChange={(e) => setDurationMin(e.target.value)} placeholder="0" />
+
+      <label>รายละเอียด</label>
+      <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="รายละเอียดงาน / เงื่อนไข / หมายเหตุ" rows={4} style={{ width: '100%', padding: '13px 14px', borderRadius: 12, border: '1px solid var(--line)', fontSize: 16, fontFamily: 'inherit', background: '#fff', color: 'var(--ink)', resize: 'vertical' }} />
+
+      <label>สถานะ</label>
+      <div className="btn-row" style={{ marginTop: 0 }}>
+        <button className={'btn ' + (active ? '' : 'ghost')} onClick={() => setActive(true)}>ใช้งานอยู่</button>
+        <button className={'btn ' + (!active ? 'dark' : 'ghost')} onClick={() => setActive(false)}>ปิดใช้งาน</button>
+      </div>
+
+      <div className="btn-row">
+        <button className="btn ghost" disabled={saving} onClick={onCancel}>ยกเลิก</button>
+        <button className="btn" disabled={saving} onClick={save}>{saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
+      </div>
+    </div>
+  )
+}
+
+/* Service deep detail + add-on options manager (owner-large) */
+function ServiceDetail({ id, flash, onBack, onEdit }) {
+  const [s, setS] = useState(null)
+  const [busy, setBusy] = useState(false)
+  // add-on form
+  const [oName, setOName] = useState('')
+  const [oPrice, setOPrice] = useState('')
+  const [oMin, setOMin] = useState('')
+  // inline option edits: oid -> {name, price_delta, minute_delta}
+  const [oEdits, setOEdits] = useState({})
+
+  const load = () => api.serviceDetail(id).then(setS).catch(() => flash('โหลดบริการไม่สำเร็จ'))
+  useEffect(() => { load() }, [id])
+
+  if (!s) return <Loading />
+
+  const options = s.options || []
+
+  const addOpt = () => {
+    if (!oName.trim()) { flash('กรอกชื่อ add-on'); return }
+    setBusy(true)
+    api.addOption(s.id, { name: oName.trim(), price_delta: N(oPrice), minute_delta: N(oMin) })
+      .then(() => { setOName(''); setOPrice(''); setOMin(''); return load() })
+      .then(() => { setBusy(false); flash('เพิ่ม add-on แล้ว') })
+      .catch((e) => { setBusy(false); flash(e.status === 403 ? e.message : 'เพิ่มไม่สำเร็จ: ' + e.message) })
+  }
+
+  const startEdit = (o) => setOEdits((p) => ({ ...p, [o.id]: { name: o.name || '', price_delta: String(N(o.price_delta)), minute_delta: String(N(o.minute_delta)) } }))
+  const cancelEdit = (oid) => setOEdits((p) => { const c = { ...p }; delete c[oid]; return c })
+  const setEditField = (oid, k, v) => setOEdits((p) => ({ ...p, [oid]: { ...p[oid], [k]: v } }))
+
+  const saveEdit = (o) => {
+    const e = oEdits[o.id]
+    if (!e) return
+    setBusy(true)
+    api.updateOption(s.id, o.id, { name: e.name.trim(), price_delta: N(e.price_delta), minute_delta: N(e.minute_delta) })
+      .then(() => { cancelEdit(o.id); return load() })
+      .then(() => { setBusy(false); flash('แก้ add-on แล้ว') })
+      .catch((err) => { setBusy(false); flash(err.status === 403 ? err.message : 'แก้ไม่สำเร็จ: ' + err.message) })
+  }
+
+  const removeOpt = (o) => {
+    if (typeof window !== 'undefined' && !window.confirm('ลบ add-on "' + o.name + '" ?')) return
+    setBusy(true)
+    api.deleteOption(s.id, o.id)
+      .then(() => load())
+      .then(() => { setBusy(false); flash('ลบ add-on แล้ว') })
+      .catch((e) => { setBusy(false); flash(e.status === 403 ? e.message : 'ลบไม่สำเร็จ: ' + e.message) })
+  }
+
+  return (
+    <>
+      <div className="card">
+        <div className="row">
+          <div className="grow">
+            <div className="name" style={{ fontSize: 18 }}>
+              {s.name}
+              {s.active === false && <span className="badge closed" style={{ marginLeft: 8 }}>ปิดใช้งาน</span>}
+            </div>
+            <div className="meta">{s.category || 'อื่นๆ'} · {baht(s.base_price)} · {N(s.duration_min)} นาที</div>
+          </div>
+          <button className="btn secondary" style={{ width: 'auto', padding: '8px 14px' }} onClick={() => onEdit(s)}>✏️ แก้ไข</button>
+        </div>
+        {s.description && <div className="meta" style={{ marginTop: 10, whiteSpace: 'pre-wrap' }}>{s.description}</div>}
+      </div>
+
+      <div className="section-title">Add-on / ออปชันเสริม</div>
+      {options.length === 0 ? (
+        <div className="empty">ยังไม่มี add-on</div>
+      ) : (
+        options.map((o) => {
+          const ed = oEdits[o.id]
+          const inactive = o.active === false
+          return (
+            <div className="card" key={o.id}>
+              {ed ? (
+                <>
+                  <label>ชื่อ</label>
+                  <input value={ed.name} onChange={(e) => setEditField(o.id, 'name', e.target.value)} />
+                  <label>+ราคา (บาท)</label>
+                  <input type="number" value={ed.price_delta} onChange={(e) => setEditField(o.id, 'price_delta', e.target.value)} />
+                  <label>+เวลา (นาที)</label>
+                  <input type="number" value={ed.minute_delta} onChange={(e) => setEditField(o.id, 'minute_delta', e.target.value)} />
+                  <div className="btn-row">
+                    <button className="btn ghost" disabled={busy} onClick={() => cancelEdit(o.id)}>ยกเลิก</button>
+                    <button className="btn" disabled={busy} onClick={() => saveEdit(o)}>บันทึก</button>
+                  </div>
+                </>
+              ) : (
+                <div className="row">
+                  <div className="grow">
+                    <div className="name" style={inactive ? { color: 'var(--muted)', textDecoration: 'line-through' } : undefined}>
+                      {o.name}
+                      {inactive && <span className="badge closed" style={{ marginLeft: 8 }}>ปิด</span>}
+                    </div>
+                    <div className="meta">+{baht(o.price_delta)} · +{N(o.minute_delta)} นาที</div>
+                  </div>
+                  <button className="btn secondary" style={{ width: 'auto', padding: '8px 12px', marginRight: 6 }} disabled={busy} onClick={() => startEdit(o)}>แก้</button>
+                  <button className="btn ghost" style={{ width: 'auto', padding: '8px 12px' }} disabled={busy} onClick={() => removeOpt(o)}>ลบ</button>
+                </div>
+              )}
+            </div>
+          )
+        })
+      )}
+
+      <div className="section-title">เพิ่ม add-on</div>
+      <div className="card">
+        <label>ชื่อ add-on</label>
+        <input value={oName} onChange={(e) => setOName(e.target.value)} placeholder="เช่น เพิ่มลาย, ถอดเก่า" />
+        <label>+ราคา (บาท)</label>
+        <input type="number" value={oPrice} onChange={(e) => setOPrice(e.target.value)} placeholder="0" />
+        <label>+เวลา (นาที)</label>
+        <input type="number" value={oMin} onChange={(e) => setOMin(e.target.value)} placeholder="0" />
+        <div className="btn-row">
+          <button className="btn" disabled={busy} onClick={addOpt}>➕ เพิ่ม add-on</button>
+        </div>
+      </div>
+
+      <div className="spacer" />
+      <div className="btn-row">
+        <button className="btn ghost" onClick={onBack}>‹ กลับไปรายการบริการ</button>
+      </div>
     </>
   )
 }
@@ -761,6 +999,7 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   const [payFail, setPayFail] = useState(false) // EDC failed -> show fallback
   const [priceEdits, setPriceEdits] = useState({}) // itemId -> string
   const [minutesEdits, setMinutesEdits] = useState({}) // itemId -> string
+  const [optSel, setOptSel] = useState({}) // itemId -> { [optionId]: true } selected add-ons
   const [techs, setTechs] = useState([]) // [{id,name,role}] for assign prompt
   const [reconcile, setReconcile] = useState(null) // pid that needs manual reconcile (key expired)
 
@@ -825,6 +1064,41 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
         flash('แก้เวลาแล้ว')
       })
       .catch((e) => { setBusy(false); flash('แก้เวลาไม่สำเร็จ: ' + e.message) })
+  }
+
+  // add-on options for a cart item, looked up from the loaded services list by service_id
+  const optionsForItem = (it) => {
+    const svc = services.find((s) => N(s.id) === N(it.service_id))
+    return (svc && svc.options) || []
+  }
+
+  // toggle an add-on on a cart item → recompute quoted_price + minutes and persist.
+  // base = service base_price/duration_min; quoted = base + Σ(checked price_delta), minutes = base_min + Σ(checked minute_delta)
+  const toggleOption = (it, opt) => {
+    const svc = services.find((s) => N(s.id) === N(it.service_id))
+    if (!svc) return
+    const cur = optSel[it.id] || {}
+    const next = { ...cur }
+    if (next[opt.id]) delete next[opt.id]
+    else next[opt.id] = true
+    const opts = optionsForItem(it)
+    let priceSum = 0
+    let minSum = 0
+    opts.forEach((o) => {
+      if (next[o.id]) { priceSum += N(o.price_delta); minSum += N(o.minute_delta) }
+    })
+    const newPrice = N(svc.base_price) + priceSum
+    const newMinutes = N(svc.duration_min) + minSum
+    setOptSel((p) => ({ ...p, [it.id]: next }))
+    setBusy(true)
+    api.updateItem(id, it.id, { quoted_price: newPrice, minutes: newMinutes })
+      .then((d) => { setT(d); setBusy(false) })
+      .catch((e) => {
+        // revert selection on failure
+        setOptSel((p) => ({ ...p, [it.id]: cur }))
+        setBusy(false)
+        flash('ปรับออปชันไม่สำเร็จ: ' + e.message)
+      })
   }
 
   // start work: needs an assigned tech; if none, prompt to pick one
@@ -1038,6 +1312,26 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
                 แก้
               </button>
             </div>
+            {optionsForItem(it).length > 0 && (
+              <>
+                <label>ออปชันเสริม (Add-on)</label>
+                {optionsForItem(it).map((o) => {
+                  const checked = !!(optSel[it.id] && optSel[it.id][o.id])
+                  return (
+                    <label key={o.id} className="opt-check" style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '6px 2px', color: 'var(--ink)', fontWeight: 500 }}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={busy}
+                        onChange={() => toggleOption(it, o)}
+                        style={{ width: 'auto', margin: 0 }}
+                      />
+                      <span className="grow">{o.name} <span className="meta">(+{baht(o.price_delta)} / +{N(o.minute_delta)}min)</span></span>
+                    </label>
+                  )
+                })}
+              </>
+            )}
           </div>
         ))
       )}
@@ -1615,6 +1909,16 @@ function groupByCat(list) {
     out[c].push(s)
   })
   return out
+}
+
+// unique non-empty category names (for the <datalist> suggestion in ServiceForm)
+function catNames(list) {
+  const seen = []
+  list.forEach((s) => {
+    const c = (s.category || '').trim()
+    if (c && !seen.includes(c)) seen.push(c)
+  })
+  return seen
 }
 
 function payMethodTH(m) {

@@ -98,3 +98,17 @@ ALTER TABLE ticket_item ADD COLUMN IF NOT EXISTS minutes INTEGER;
 ALTER TABLE ticket ADD COLUMN IF NOT EXISTS assigned_user_id INTEGER REFERENCES app_user(id);
 ALTER TABLE ticket ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
 ALTER TABLE ticket ADD COLUMN IF NOT EXISTS est_minutes INTEGER;
+
+-- §v0.7 Services full CRUD + deep detail (service description + add-on options).
+-- Idempotent — bootstrap() runs this file every startup.
+ALTER TABLE service ADD COLUMN IF NOT EXISTS description TEXT;
+
+CREATE TABLE IF NOT EXISTS service_option (
+  id           SERIAL PRIMARY KEY,
+  store_id     INTEGER,
+  service_id   INTEGER REFERENCES service(id),
+  name         TEXT NOT NULL,
+  price_delta  NUMERIC(10,2) DEFAULT 0,
+  minute_delta INTEGER DEFAULT 0,
+  active       BOOLEAN NOT NULL DEFAULT TRUE
+);

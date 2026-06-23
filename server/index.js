@@ -293,29 +293,153 @@ app.get('/api/summary', async (_req, res) => {
   res.json({ revenue: sales.revenue, txns: sales.txns, members, openTickets, services });
 });
 
-app.get('/api/services', async (_req, res) => {
-  res.json((await q('SELECT * FROM service WHERE active ORDER BY category, name')).rows);
+// §v0.7 — list services. Default = ACTIVE services with their ACTIVE options
+// (the ticket picker). ?all=1 = ALL services with ALL options (owner management
+// table). Each service includes `description` + an `options` array.
+app.get('/api/services', async (req, res) => {
+  const all = req.query.all === '1' || req.query.all === 'true';
+  const services = (await q(
+    all
+      ? 'SELECT * FROM service ORDER BY category, name'
+      : 'SELECT * FROM service WHERE active ORDER BY category, name')).rows;
+  if (services.length === 0) return res.json([]);
+  const ids = services.map(s => s.id);
+  // Active-only picker exposes a slim option shape; ?all exposes full rows.
+  const opts = (await q(
+    all
+      ? 'SELECT * FROM service_option WHERE service_id = ANY($1) ORDER BY id'
+      : `SELECT id, service_id, name, price_delta, minute_delta
+           FROM service_option WHERE service_id = ANY($1) AND active ORDER BY id`,
+    [ids])).rows;
+  const byService = new Map(ids.map(id => [id, []]));
+  for (const o of opts) byService.get(o.service_id)?.push(o);
+  res.json(services.map(s => ({ ...s, options: byService.get(s.id) || [] })));
 });
 
-// Service catalog edit (incl. price) — owner only. Audits price changes.
+// §v0.7 — one service (incl description) + ALL its options (active+inactive).
+app.get('/api/services/:id', async (req, res) => {
+  const s = (await q('SELECT * FROM service WHERE id=$1', [req.params.id])).rows[0];
+  if (!s) return res.status(404).json({ error: 'service not found' });
+  const options = (await q(
+    'SELECT * FROM service_option WHERE service_id=$1 ORDER BY id', [req.params.id])).rows;
+  res.json({ ...s, options });
+});
+
+// §v0.7 — create a service. Owner only. name + base_price required.
+app.post('/api/services', requireOwner, async (req, res) => {
+  const { name, category, base_price, duration_min, description, active } = req.body || {};
+  if (!name || base_price == null)
+    return res.status(400).json({ error: 'name and base_price required' });
+  const s = (await q(
+    `INSERT INTO service (store_id, name, category, base_price, duration_min, description, active)
+     VALUES ($1,$2,$3,$4, COALESCE($5,30), $6, COALESCE($7, TRUE))
+     RETURNING *`,
+    [req.user.storeId, name, category || null, base_price,
+     duration_min == null ? null : duration_min, description || null,
+     active === undefined ? null : !!active])).rows[0];
+  await audit(req.user.id, req.user.storeId, 'service_create', 'service', s.id,
+    { name: s.name, base_price: Number(s.base_price) });
+  res.json(s);
+});
+
+// §v0.7 — Service catalog edit — owner only. Extends earlier price-only edit to
+// also cover category / duration_min / description. Audits 'service_price_change'
+// when base_price changes, else 'service_update'.
 app.put('/api/services/:id', requireOwner, async (req, res) => {
   const existing = (await q('SELECT * FROM service WHERE id=$1', [req.params.id])).rows[0];
   if (!existing) return res.status(404).json({ error: 'service not found' });
-  const { name, base_price, active } = req.body || {};
+  const { name, category, base_price, duration_min, description, active } = req.body || {};
   const next = {
     name: name === undefined ? existing.name : name,
+    category: category === undefined ? existing.category : category,
     base_price: base_price === undefined ? existing.base_price : base_price,
+    duration_min: duration_min === undefined ? existing.duration_min : duration_min,
+    description: description === undefined ? existing.description : description,
     active: active === undefined ? existing.active : !!active,
   };
   const s = (await q(
-    `UPDATE service SET name=$2, base_price=$3, active=$4
+    `UPDATE service SET name=$2, category=$3, base_price=$4,
+        duration_min=$5, description=$6, active=$7
       WHERE id=$1 RETURNING *`,
-    [req.params.id, next.name, next.base_price, next.active])).rows[0];
+    [req.params.id, next.name, next.category, next.base_price,
+     next.duration_min, next.description, next.active])).rows[0];
   if (base_price !== undefined && Number(base_price) !== Number(existing.base_price)) {
     await audit(req.user.id, req.user.storeId, 'service_price_change', 'service', s.id,
       { old_price: Number(existing.base_price), new_price: Number(s.base_price) });
+  } else {
+    await audit(req.user.id, req.user.storeId, 'service_update', 'service', s.id,
+      { name: s.name });
   }
   res.json(s);
+});
+
+// §v0.7 — smart delete (Nothing is Deleted). If referenced by any ticket_item →
+// SOFT delete (active=false) to preserve bill history. Else → HARD delete the
+// row and its options. Owner only. Audits 'service_delete' with {mode}.
+app.delete('/api/services/:id', requireOwner, async (req, res) => {
+  const existing = (await q('SELECT * FROM service WHERE id=$1', [req.params.id])).rows[0];
+  if (!existing) return res.status(404).json({ error: 'service not found' });
+  const used = (await q(
+    'SELECT 1 FROM ticket_item WHERE service_id=$1 LIMIT 1', [req.params.id])).rows.length > 0;
+  if (used) {
+    const s = (await q(
+      'UPDATE service SET active=false WHERE id=$1 RETURNING *', [req.params.id])).rows[0];
+    await audit(req.user.id, req.user.storeId, 'service_delete', 'service', s.id,
+      { mode: 'soft' });
+    return res.json({ mode: 'soft', service: s });
+  }
+  await q('DELETE FROM service_option WHERE service_id=$1', [req.params.id]);
+  await q('DELETE FROM service WHERE id=$1', [req.params.id]);
+  await audit(req.user.id, req.user.storeId, 'service_delete', 'service', req.params.id,
+    { mode: 'hard' });
+  res.json({ mode: 'hard' });
+});
+
+// §v0.7 — add an option (add-on) to a service. Owner only. store_id inherited
+// from the service. Audits 'service_option_add' (best-effort).
+app.post('/api/services/:id/options', requireOwner, async (req, res) => {
+  const svc = (await q('SELECT * FROM service WHERE id=$1', [req.params.id])).rows[0];
+  if (!svc) return res.status(404).json({ error: 'service not found' });
+  const { name, price_delta, minute_delta } = req.body || {};
+  if (!name) return res.status(400).json({ error: 'name required' });
+  const o = (await q(
+    `INSERT INTO service_option (store_id, service_id, name, price_delta, minute_delta)
+     VALUES ($1,$2,$3, COALESCE($4,0), COALESCE($5,0))
+     RETURNING *`,
+    [svc.store_id ?? null, svc.id, name,
+     price_delta == null ? null : price_delta,
+     minute_delta == null ? null : minute_delta])).rows[0];
+  await audit(req.user.id, req.user.storeId, 'service_option_add', 'service_option', o.id,
+    { service_id: svc.id, name: o.name });
+  res.json(o);
+});
+
+// §v0.7 — partial update of an option. Owner only.
+app.put('/api/services/:id/options/:oid', requireOwner, async (req, res) => {
+  const existing = (await q(
+    'SELECT * FROM service_option WHERE id=$1 AND service_id=$2',
+    [req.params.oid, req.params.id])).rows[0];
+  if (!existing) return res.status(404).json({ error: 'option not found' });
+  const { name, price_delta, minute_delta, active } = req.body || {};
+  const next = {
+    name: name === undefined ? existing.name : name,
+    price_delta: price_delta === undefined ? existing.price_delta : price_delta,
+    minute_delta: minute_delta === undefined ? existing.minute_delta : minute_delta,
+    active: active === undefined ? existing.active : !!active,
+  };
+  const o = (await q(
+    `UPDATE service_option SET name=$3, price_delta=$4, minute_delta=$5, active=$6
+      WHERE id=$1 AND service_id=$2 RETURNING *`,
+    [req.params.oid, req.params.id, next.name, next.price_delta,
+     next.minute_delta, next.active])).rows[0];
+  res.json(o);
+});
+
+// §v0.7 — hard delete an option (config only, no ticket history). Owner only.
+app.delete('/api/services/:id/options/:oid', requireOwner, async (req, res) => {
+  await q('DELETE FROM service_option WHERE id=$1 AND service_id=$2',
+    [req.params.oid, req.params.id]);
+  res.json({ ok: true });
 });
 
 app.get('/api/members', async (req, res) => {

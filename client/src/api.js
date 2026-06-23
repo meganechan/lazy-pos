@@ -90,12 +90,19 @@ export const api = {
     return j('/api/audit' + qs)
   },
 
-  /* ── services ── */
+  /* ── services (CRUD + add-on options, owner only for mutations) ── */
   updateService: (id, body) => j(`/api/services/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  serviceDetail: (id) => j(`/api/services/${id}`),
+  createService: (body) => j('/api/services', { method: 'POST', body: JSON.stringify(body) }),
+  deleteService: (id) => j(`/api/services/${id}`, { method: 'DELETE' }),
+  addOption: (sid, body) => j(`/api/services/${sid}/options`, { method: 'POST', body: JSON.stringify(body) }),
+  updateOption: (sid, oid, body) => j(`/api/services/${sid}/options/${oid}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteOption: (sid, oid) => j(`/api/services/${sid}/options/${oid}`, { method: 'DELETE' }),
 
   /* ── existing app endpoints (now carry auth header automatically) ── */
   summary: () => j('/api/summary'),
-  services: () => j('/api/services'),
+  // services() = active services (for the ticket picker); services(true) = ALL services (+all options) for management
+  services: (all) => j('/api/services' + (all ? '?all=1' : '')),
   members: (q) => j('/api/members' + (typeof q === 'string' && q.trim() ? '?q=' + encodeURIComponent(q.trim()) : '')),
   member: (id) => j(`/api/members/${id}`),
   addMember: (body) => j('/api/members', { method: 'POST', body: JSON.stringify(body) }),
