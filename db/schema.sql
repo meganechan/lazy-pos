@@ -113,6 +113,12 @@ CREATE TABLE IF NOT EXISTS app_session (
 );
 CREATE INDEX IF NOT EXISTS idx_app_session_expires ON app_session (expires_at);
 
+-- §v1.1 Free-style (custom) line items + safe service migrate-on-delete.
+-- Non-destructive: existing ticket_item rows keep their service_id. A custom
+-- item has service_id = NULL and carries its label in custom_name.
+ALTER TABLE ticket_item ALTER COLUMN service_id DROP NOT NULL;
+ALTER TABLE ticket_item ADD COLUMN IF NOT EXISTS custom_name TEXT;
+
 -- §v0.6 Queue + per-item service time + technician lock.
 -- Idempotent ADD COLUMN (Postgres) — bootstrap() runs this file every startup.
 ALTER TABLE ticket_item ADD COLUMN IF NOT EXISTS minutes INTEGER;

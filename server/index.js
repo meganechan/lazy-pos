@@ -129,7 +129,7 @@ function itemMinutes(row) {
 async function recomputeEstMinutes(ticketId) {
   const rows = (await q(
     `SELECT ti.minutes, ti.qty, s.duration_min
-       FROM ticket_item ti JOIN service s ON s.id = ti.service_id
+       FROM ticket_item ti LEFT JOIN service s ON s.id = ti.service_id
       WHERE ti.ticket_id=$1`, [ticketId])).rows;
   const est = rows.reduce((sum, r) => sum + itemMinutes(r) * Number(r.qty), 0);
   await q('UPDATE ticket SET est_minutes=$2 WHERE id=$1', [ticketId, est]);
@@ -150,10 +150,10 @@ async function ticketDetail(id, storeId) {
     ? (await q('SELECT id, name, role FROM app_user WHERE id=$1', [t.assigned_user_id])).rows[0]
     : null;
   const items = (await q(
-    `SELECT ti.*, s.name AS service_name, s.category, s.duration_min
-       FROM ticket_item ti JOIN service s ON s.id = ti.service_id
+    `SELECT ti.*, COALESCE(s.name, ti.custom_name) AS service_name, s.category, s.duration_min
+       FROM ticket_item ti LEFT JOIN service s ON s.id = ti.service_id
       WHERE ti.ticket_id=$1 ORDER BY ti.id`, [id])).rows
-    .map(r => ({ ...r, minutes: itemMinutes(r) }));
+    .map(r => ({ ...r, minutes: itemMinutes(r), is_custom: r.service_id == null }));
   const payments = (await q(
     'SELECT * FROM payment WHERE ticket_id=$1 ORDER BY payment_seq', [id])).rows;
   const quote = (await q(
@@ -640,17 +640,54 @@ app.put('/api/services/:id', requireOwner, async (req, res) => {
   res.json(s);
 });
 
-// §v0.7 — smart delete (Nothing is Deleted). If referenced by any ticket_item →
-// SOFT delete (active=false) to preserve bill history. Else → HARD delete the
-// row and its options. Owner only. Audits 'service_delete' with {mode}.
+// §v1.1 — service delete with migrate-on-delete (Nothing is Deleted, safely).
+// Owner only. Behaviour depends on whether the service is referenced by any
+// ticket_item and on the request body:
+//  - not referenced → HARD delete (options + service). {mode:'hard'}.
+//  - referenced + body.migrate_to → reassign every referencing ticket_item to
+//    the target service (same store, active, != :id), then HARD delete the old
+//    service (its refs are now safely moved). {mode:'migrate', migrated, migrate_to}.
+//  - referenced + body.archive → SOFT archive (active=false) to keep bill
+//    history. {mode:'soft', service}.
+//  - referenced + neither → 409 {error:'in_use', needs_migrate:true, count}.
+// Audits 'service_delete' with the matching {mode}.
 app.delete('/api/services/:id', requireOwner, async (req, res) => {
   const existing = (await q(
     'SELECT * FROM service WHERE id=$1 AND store_id=$2',
     [req.params.id, req.user.storeId])).rows[0];
   if (!existing) return res.status(404).json({ error: 'service not found' });
-  const used = (await q(
-    'SELECT 1 FROM ticket_item WHERE service_id=$1 LIMIT 1', [req.params.id])).rows.length > 0;
-  if (used) {
+  const { migrate_to, archive } = req.body || {};
+  const count = (await q(
+    'SELECT count(*)::int AS n FROM ticket_item WHERE service_id=$1',
+    [req.params.id])).rows[0].n;
+  // Not referenced anywhere → safe to remove the row and its options outright.
+  if (count === 0) {
+    await q('DELETE FROM service_option WHERE service_id=$1', [req.params.id]);
+    await q('DELETE FROM service WHERE id=$1', [req.params.id]);
+    await audit(req.user.id, req.user.storeId, 'service_delete', 'service', req.params.id,
+      { mode: 'hard' });
+    return res.json({ mode: 'hard' });
+  }
+  // Referenced + a migrate target → move the references, then hard delete.
+  if (migrate_to != null && migrate_to !== '') {
+    if (String(migrate_to) === String(req.params.id))
+      return res.status(400).json({ error: 'migrate_to must differ from the service being deleted' });
+    const target = (await q(
+      'SELECT id FROM service WHERE id=$1 AND store_id=$2 AND active=true',
+      [migrate_to, req.user.storeId])).rows[0];
+    if (!target)
+      return res.status(400).json({ error: 'invalid migrate_to (must be an active service in this store)' });
+    const migrated = (await q(
+      'UPDATE ticket_item SET service_id=$1 WHERE service_id=$2',
+      [migrate_to, req.params.id])).rowCount;
+    await q('DELETE FROM service_option WHERE service_id=$1', [req.params.id]);
+    await q('DELETE FROM service WHERE id=$1', [req.params.id]);
+    await audit(req.user.id, req.user.storeId, 'service_delete', 'service', req.params.id,
+      { mode: 'migrate', migrate_to, migrated });
+    return res.json({ mode: 'migrate', migrated, migrate_to });
+  }
+  // Referenced + explicit archive → soft delete (active=false), keep history.
+  if (archive) {
     const s = (await q(
       'UPDATE service SET active=false WHERE id=$1 AND store_id=$2 RETURNING *',
       [req.params.id, req.user.storeId])).rows[0];
@@ -658,11 +695,8 @@ app.delete('/api/services/:id', requireOwner, async (req, res) => {
       { mode: 'soft' });
     return res.json({ mode: 'soft', service: s });
   }
-  await q('DELETE FROM service_option WHERE service_id=$1', [req.params.id]);
-  await q('DELETE FROM service WHERE id=$1', [req.params.id]);
-  await audit(req.user.id, req.user.storeId, 'service_delete', 'service', req.params.id,
-    { mode: 'hard' });
-  res.json({ mode: 'hard' });
+  // Referenced but the caller gave no instruction → ask them to choose.
+  return res.status(409).json({ error: 'in_use', needs_migrate: true, count });
 });
 
 // §v0.7 — add an option (add-on) to a service. Owner only. store_id inherited
@@ -840,6 +874,28 @@ app.post('/api/tickets/:id/items', async (req, res) => {
     `INSERT INTO ticket_item (ticket_id, service_id, qty, quoted_price, note, minutes)
      VALUES ($1,$2,$3,$4,$5,$6)`,
     [req.params.id, service_id, qty || 1, quoted_price, note || null, mins]);
+  await q("UPDATE ticket SET status='in_progress' WHERE id=$1 AND status='open'", [req.params.id]);
+  await recomputeEstMinutes(req.params.id);
+  res.json(await ticketDetail(req.params.id, req.user.storeId));
+});
+
+// §v1.1 — free-style ("ตามสั่ง") line item: no service catalog entry. The
+// cashier supplies the name + price (+ optional minutes). Stored with
+// service_id NULL and the label in custom_name; rolls into the bill total and
+// est_minutes exactly like a normal item.
+app.post('/api/tickets/:id/custom-item', async (req, res) => {
+  const ticket = (await q(
+    'SELECT id FROM ticket WHERE id=$1 AND store_id=$2',
+    [req.params.id, req.user.storeId])).rows[0];
+  if (!ticket) return res.status(404).json({ error: 'not found' });
+  const { name, quoted_price, qty, minutes } = req.body || {};
+  if (!name || !String(name).trim() || quoted_price == null)
+    return res.status(400).json({ error: 'name and quoted_price required' });
+  await q(
+    `INSERT INTO ticket_item (ticket_id, service_id, custom_name, qty, quoted_price, note, minutes)
+     VALUES ($1, NULL, $2, $3, $4, NULL, $5)`,
+    [req.params.id, String(name).trim(), qty || 1, quoted_price,
+     minutes == null || minutes === '' ? null : minutes]);
   await q("UPDATE ticket SET status='in_progress' WHERE id=$1 AND status='open'", [req.params.id]);
   await recomputeEstMinutes(req.params.id);
   res.json(await ticketDetail(req.params.id, req.user.storeId));
