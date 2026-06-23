@@ -119,6 +119,38 @@ CREATE INDEX IF NOT EXISTS idx_app_session_expires ON app_session (expires_at);
 ALTER TABLE ticket_item ALTER COLUMN service_id DROP NOT NULL;
 ALTER TABLE ticket_item ADD COLUMN IF NOT EXISTS custom_name TEXT;
 
+-- §v1.2 Discounts (bill + per-item, % or ฿) + staff pricing + staff
+-- permission ceilings / daily quota + owner-PIN override. All non-destructive.
+-- Semantics: for a STAFF user, max_discount_percent / max_discount_baht are the
+-- ceiling they may apply WITHOUT an owner override; daily_discount_quota /
+-- daily_staff_price_quota are how many discount / staff-price actions they may
+-- do per day WITHOUT override. 0 = none allowed without override. OWNER is
+-- unlimited and never needs override.
+ALTER TABLE service     ADD COLUMN IF NOT EXISTS staff_price NUMERIC(10,2);
+ALTER TABLE ticket      ADD COLUMN IF NOT EXISTS discount_type TEXT;   -- 'percent' | 'baht' | NULL
+ALTER TABLE ticket      ADD COLUMN IF NOT EXISTS discount_value NUMERIC(10,2);
+ALTER TABLE ticket_item ADD COLUMN IF NOT EXISTS discount_type TEXT;
+ALTER TABLE ticket_item ADD COLUMN IF NOT EXISTS discount_value NUMERIC(10,2);
+ALTER TABLE ticket_item ADD COLUMN IF NOT EXISTS is_staff_price BOOLEAN NOT NULL DEFAULT FALSE;
+
+CREATE TABLE IF NOT EXISTS store_settings (
+  store_id                INTEGER PRIMARY KEY REFERENCES store(id),
+  max_discount_percent    NUMERIC(5,2)  NOT NULL DEFAULT 0,
+  max_discount_baht       NUMERIC(10,2) NOT NULL DEFAULT 0,
+  daily_discount_quota    INTEGER NOT NULL DEFAULT 0,
+  daily_staff_price_quota INTEGER NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS staff_daily_usage (
+  store_id INTEGER NOT NULL,
+  user_id  INTEGER NOT NULL,
+  day      DATE NOT NULL,
+  kind     TEXT NOT NULL,            -- 'discount' | 'staff_price' | 'override'
+  count    INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (store_id, user_id, day, kind)
+);
+
 -- §v0.6 Queue + per-item service time + technician lock.
 -- Idempotent ADD COLUMN (Postgres) — bootstrap() runs this file every startup.
 ALTER TABLE ticket_item ADD COLUMN IF NOT EXISTS minutes INTEGER;

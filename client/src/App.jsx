@@ -101,7 +101,7 @@ const statusTH = {
 export default function App() {
   // auth gate: only treat as logged-in when both token + user exist
   const [user, setUser] = useState(() => (getToken() ? getUser() : null))
-  const [tab, setTab] = useState('dashboard') // dashboard | members | services | tickets | users | audit
+  const [tab, setTab] = useState('dashboard') // dashboard | members | services | tickets | users | audit | settings
   const [view, setView] = useState(null) // null | {kind:'member',id} | {kind:'ticket',id} | {kind:'newTicket'} | {kind:'newMember'} | {kind:'newUser'} | {kind:'editUser',u}
   const [toast, setToast] = useState(null)
   const { isLarge } = useViewport()
@@ -170,6 +170,7 @@ export default function App() {
     else if (tab === 'tickets') { title = 'บิลทั้งหมด'; sub = 'Tickets' }
     else if (tab === 'users') { title = 'จัดการผู้ใช้'; sub = 'Users' }
     else if (tab === 'audit') { title = 'บันทึกกิจกรรม'; sub = 'Audit log' }
+    else if (tab === 'settings') { title = 'ตั้งค่า'; sub = 'Settings' }
   }
 
   // which tabs get a FAB (new ticket)
@@ -223,6 +224,8 @@ export default function App() {
           <Users flash={flash} canManage={canManage} ownerPhone={ownerPhone} wide={wide} onNewUser={() => setView({ kind: 'newUser' })} onEditUser={(u) => setView({ kind: 'editUser', u })} />
         ) : tab === 'audit' && isOwner ? (
           <AuditLog flash={flash} wide={wide} />
+        ) : tab === 'settings' && isOwner ? (
+          <Settings flash={flash} />
         ) : (
           <Tickets openTicket={openTicket} />
         )}
@@ -260,6 +263,11 @@ export default function App() {
           {isOwner && (
             <button className={tab === 'audit' ? 'active' : ''} onClick={() => goTab('audit')}>
               <span className="tico"><Icon name="history" /></span>บันทึก
+            </button>
+          )}
+          {isOwner && (
+            <button className={tab === 'settings' ? 'active' : ''} onClick={() => goTab('settings')}>
+              <span className="tico"><Icon name="lock" /></span>ตั้งค่า
             </button>
           )}
         </div>
@@ -737,6 +745,7 @@ function ServiceForm({ flash, s, categories, onDone, onCancel }) {
   const [name, setName] = useState(s ? (s.name || '') : '')
   const [category, setCategory] = useState(s ? (s.category || '') : '')
   const [basePrice, setBasePrice] = useState(s ? String(N(s.base_price)) : '')
+  const [staffPrice, setStaffPrice] = useState(s && s.staff_price != null ? String(N(s.staff_price)) : '')
   const [durationMin, setDurationMin] = useState(s ? String(N(s.duration_min)) : '')
   const [description, setDescription] = useState(s ? (s.description || '') : '')
   const [active, setActive] = useState(s ? s.active !== false : true)
@@ -749,6 +758,7 @@ function ServiceForm({ flash, s, categories, onDone, onCancel }) {
       name: name.trim(),
       category: category.trim() || undefined,
       base_price: N(basePrice),
+      staff_price: staffPrice === '' ? undefined : N(staffPrice),
       duration_min: durationMin === '' ? undefined : N(durationMin),
       description: description.trim() || undefined,
       active,
@@ -775,6 +785,11 @@ function ServiceForm({ flash, s, categories, onDone, onCancel }) {
         <div style={{ flex: 1 }}>
           <label>ราคา (บาท)</label>
           <input type="number" value={basePrice} onChange={(e) => setBasePrice(e.target.value)} placeholder="0" />
+        </div>
+        <div style={{ flex: 1 }}>
+          <label>ราคาพนักงาน (บาท)</label>
+          <input type="number" value={staffPrice} onChange={(e) => setStaffPrice(e.target.value)} placeholder="0" />
+          <div className="meta" style={{ marginTop: -6, marginBottom: 8 }}>ว่าง = ใช้ราคาปกติ</div>
         </div>
         <div style={{ flex: 1 }}>
           <label>เวลา (นาที)</label>
@@ -1100,6 +1115,41 @@ function NewTicket({ flash, preMember, onCreated }) {
   )
 }
 
+/* ───────────────────────── Owner-PIN override modal ─────────────────────────
+ * Shown when a STAFF action exceeds the discount ceiling / quota and the server
+ * returns 403 need_override. The owner types their PIN to approve the action.
+ * The caller re-opens with `err` set to keep the modal up after override_failed. */
+function OverridePinModal({ title, reason, err, busy, onSubmit, onCancel }) {
+  const [pin, setPin] = useState('')
+  const reasonTH = reason === 'limit' ? 'เกินเพดานที่ตั้งไว้' : reason === 'quota' ? 'เกินโควต้าวันนี้' : ''
+  return (
+    <div
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, padding: 16 }}
+      onClick={onCancel}
+    >
+      <div className="card" style={{ width: '100%', maxWidth: 360, margin: 0 }} onClick={(e) => e.stopPropagation()}>
+        <div className="name" style={{ fontSize: 17, marginBottom: 4 }}>{title || 'ต้องการอนุมัติจากเจ้าของร้าน'}</div>
+        {reasonTH && <div className="meta" style={{ marginBottom: 6 }}>{reasonTH}</div>}
+        <label>PIN ของเจ้าของร้าน</label>
+        <input
+          type="password"
+          inputMode="numeric"
+          value={pin}
+          autoFocus
+          onChange={(e) => setPin(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && pin) onSubmit(pin) }}
+          placeholder="••••"
+        />
+        {err && <div className="pin-err">{err}</div>}
+        <div className="btn-row">
+          <button className="btn ghost" disabled={busy} onClick={onCancel}>ยกเลิก</button>
+          <button className="btn" disabled={busy || !pin} onClick={() => onSubmit(pin)}>ยืนยัน</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /* ───────────────────────── Ticket / checkout ───────────────────────── */
 function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   // owner-on-phone = read-only summary: hide all mutate controls
@@ -1121,8 +1171,22 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   const [cName, setCName] = useState('')
   const [cPrice, setCPrice] = useState('')
   const [cMin, setCMin] = useState('')
+  // bill-level discount inline form: type '%'|'baht', value string
+  const [billDiscType, setBillDiscType] = useState('percent')
+  const [billDiscVal, setBillDiscVal] = useState('')
+  // per-item discount inline forms: itemId -> { type, value }
+  const [itemDisc, setItemDisc] = useState({})
+  // owner-PIN override modal. pendingOverride records the action to retry once
+  // a PIN is supplied: { run: (pin) => Promise, reason }. overrideErr keeps the
+  // modal open with a message after override_failed.
+  const [pendingOverride, setPendingOverride] = useState(null)
+  const [overrideErr, setOverrideErr] = useState('')
 
   const refresh = () => api.ticket(id).then(setT)
+
+  // shared 403-need_override detector for discount / staff-price actions
+  const needsOverride = (e) => e && e.status === 403 && e.body && e.body.need_override
+  const overrideReason = (e) => (e && e.body && e.body.reason) || undefined
 
   const voidPay = (p) => {
     setBusy(true)
@@ -1267,6 +1331,80 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
     api.addItem(id, { service_id: s.id, qty: 1, quoted_price: N(s.base_price) })
       .then((d) => { setT(d); setBusy(false) })
       .catch((e) => { setBusy(false); flash('เพิ่มไม่สำเร็จ: ' + e.message) })
+  }
+
+  // add a service at its staff price (server swaps in staff_price + flags it).
+  // STAFF may exceed the daily staff-price quota → 403 need_override → owner PIN.
+  const addStaffPrice = (s, override_pin) => {
+    setBusy(true)
+    api.addItem(id, { service_id: s.id, qty: 1, quoted_price: N(s.staff_price), is_staff_price: true, ...(override_pin ? { override_pin } : {}) })
+      .then((d) => {
+        setT(d); setBusy(false)
+        setPendingOverride(null); setOverrideErr('')
+      })
+      .catch((e) => {
+        setBusy(false)
+        if (needsOverride(e)) {
+          setOverrideErr(override_pin ? 'PIN ไม่ถูกต้องหรืออนุมัติไม่สำเร็จ' : '')
+          setPendingOverride({ reason: overrideReason(e), run: (pin) => addStaffPrice(s, pin) })
+          return
+        }
+        flash('เพิ่มไม่สำเร็จ: ' + e.message)
+      })
+  }
+
+  // bill-level discount. type 'percent'|'baht'. STAFF over ceiling/quota → owner PIN.
+  const applyBillDiscount = (type, value, override_pin) => {
+    setBusy(true)
+    api.setBillDiscount(id, { discount_type: type, discount_value: N(value), ...(override_pin ? { override_pin } : {}) })
+      .then((d) => {
+        setT(d); setBusy(false)
+        setPendingOverride(null); setOverrideErr('')
+        flash('ใช้ส่วนลดบิลแล้ว')
+      })
+      .catch((e) => {
+        setBusy(false)
+        if (needsOverride(e)) {
+          setOverrideErr(override_pin ? 'PIN ไม่ถูกต้องหรืออนุมัติไม่สำเร็จ' : '')
+          setPendingOverride({ reason: overrideReason(e), run: (pin) => applyBillDiscount(type, value, pin) })
+          return
+        }
+        flash('ใช้ส่วนลดไม่สำเร็จ: ' + e.message)
+      })
+  }
+
+  const clearBillDiscount = () => {
+    setBusy(true)
+    api.setBillDiscount(id, { discount_type: null, discount_value: 0 })
+      .then((d) => { setT(d); setBusy(false); setBillDiscVal(''); flash('ล้างส่วนลดบิลแล้ว') })
+      .catch((e) => { setBusy(false); flash('ล้างส่วนลดไม่สำเร็จ: ' + e.message) })
+  }
+
+  // per-item discount. Same override flow as the bill discount.
+  const applyItemDiscount = (it, type, value, override_pin) => {
+    setBusy(true)
+    api.setItemDiscount(id, it.id, { discount_type: type, discount_value: N(value), ...(override_pin ? { override_pin } : {}) })
+      .then((d) => {
+        setT(d); setBusy(false)
+        setPendingOverride(null); setOverrideErr('')
+        flash('ใช้ส่วนลดรายการแล้ว')
+      })
+      .catch((e) => {
+        setBusy(false)
+        if (needsOverride(e)) {
+          setOverrideErr(override_pin ? 'PIN ไม่ถูกต้องหรืออนุมัติไม่สำเร็จ' : '')
+          setPendingOverride({ reason: overrideReason(e), run: (pin) => applyItemDiscount(it, type, value, pin) })
+          return
+        }
+        flash('ใช้ส่วนลดไม่สำเร็จ: ' + e.message)
+      })
+  }
+
+  const clearItemDiscount = (it) => {
+    setBusy(true)
+    api.setItemDiscount(id, it.id, { discount_type: null, discount_value: 0 })
+      .then((d) => { setT(d); setBusy(false); flash('ล้างส่วนลดรายการแล้ว') })
+      .catch((e) => { setBusy(false); flash('ล้างส่วนลดไม่สำเร็จ: ' + e.message) })
   }
 
   const addCustom = () => {
@@ -1480,10 +1618,17 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
         items.map((it) => (
           <div className="li" key={it.id}>
             <div className="grow">
-              <div className="name">{it.service_name} {it.is_custom && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>ตามสั่ง</span>} {it.category && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>{it.category}</span>}</div>
+              <div className="name">{it.service_name} {it.is_custom && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>ตามสั่ง</span>} {it.is_staff_price && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>ราคาพนักงาน</span>} {it.category && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>{it.category}</span>}</div>
               <div className="meta">จำนวน <span className="tnum">{N(it.qty)}</span> · <Icon name="clock" size={14} className="ico-inline" /> <span className="tnum">{N(it.minutes)}</span> นาที</div>
             </div>
-            <div className="price tnum">{baht(N(it.quoted_price) * N(it.qty))}</div>
+            <div className="price tnum">
+              {N(it.discount_amount) > 0 ? (
+                <>
+                  <span style={{ textDecoration: 'line-through', color: 'var(--muted)', fontWeight: 400, marginRight: 6 }}>{baht(N(it.quoted_price) * N(it.qty))}</span>
+                  {baht(N(it.net))}
+                </>
+              ) : baht(N(it.quoted_price) * N(it.qty))}
+            </div>
           </div>
         ))
       ) : (
@@ -1491,7 +1636,7 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
           <div className="card" key={it.id}>
             <div className="row">
               <div className="grow">
-                <div className="name">{it.service_name} {it.is_custom && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>ตามสั่ง</span>} {it.category && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>{it.category}</span>}</div>
+                <div className="name">{it.service_name} {it.is_custom && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>ตามสั่ง</span>} {it.is_staff_price && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>ราคาพนักงาน</span>} {it.category && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>{it.category}</span>}</div>
                 <div className="meta">จำนวน <span className="tnum">{N(it.qty)}</span> · <Icon name="clock" size={14} className="ico-inline" /> <span className="tnum">{N(it.minutes)}</span> นาที</div>
               </div>
               <button className="btn ghost" style={{ width: 'auto', padding: '8px 12px' }} onClick={() => removeItem(it.id)}>ลบ</button>
@@ -1528,6 +1673,46 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
                 แก้
               </button>
             </div>
+            <label>ส่วนลดรายการ</label>
+            <div className="row" style={{ flexWrap: 'wrap' }}>
+              <button
+                className={'btn ' + ((itemDisc[it.id] ? itemDisc[it.id].type : 'percent') === 'percent' ? 'secondary' : 'ghost')}
+                style={{ width: 'auto', padding: '8px 12px' }}
+                disabled={busy}
+                onClick={() => setItemDisc((p) => ({ ...p, [it.id]: { ...(p[it.id] || { value: '' }), type: 'percent' } }))}
+              >
+                %
+              </button>
+              <button
+                className={'btn ' + ((itemDisc[it.id] ? itemDisc[it.id].type : 'percent') === 'baht' ? 'secondary' : 'ghost')}
+                style={{ width: 'auto', padding: '8px 12px' }}
+                disabled={busy}
+                onClick={() => setItemDisc((p) => ({ ...p, [it.id]: { ...(p[it.id] || { value: '' }), type: 'baht' } }))}
+              >
+                ฿
+              </button>
+              <input
+                type="number"
+                style={{ flex: 1, minWidth: 80 }}
+                value={itemDisc[it.id] ? itemDisc[it.id].value : ''}
+                onChange={(e) => setItemDisc((p) => ({ ...p, [it.id]: { type: (p[it.id] && p[it.id].type) || 'percent', value: e.target.value } }))}
+                placeholder="0"
+              />
+              <button
+                className="btn"
+                style={{ width: 'auto', padding: '8px 14px' }}
+                disabled={busy || !itemDisc[it.id] || itemDisc[it.id].value === ''}
+                onClick={() => applyItemDiscount(it, (itemDisc[it.id] && itemDisc[it.id].type) || 'percent', itemDisc[it.id].value)}
+              >
+                ใช้
+              </button>
+            </div>
+            {N(it.discount_amount) > 0 && (
+              <div className="meta" style={{ marginTop: 4 }}>
+                ลด: <span className="tnum" style={{ color: 'var(--rose-dark)' }}>-{baht(N(it.discount_amount))}</span> · เหลือ <span className="tnum">{baht(N(it.net))}</span>
+                <button className="btn ghost" style={{ width: 'auto', padding: '4px 10px', marginLeft: 8 }} disabled={busy} onClick={() => clearItemDiscount(it)}>ล้าง</button>
+              </div>
+            )}
             {optionsForItem(it).length > 0 && (
               <>
                 <label>ออปชันเสริม (Add-on)</label>
@@ -1567,6 +1752,16 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
                     <span style={{ fontWeight: 600 }}>{s.name}</span>
                     {s.category && <span className="cat">{s.category}</span>}
                     <div className="meta tnum" style={{ fontSize: 13, color: 'var(--muted)' }}>{baht(s.base_price)} · {N(s.duration_min)} นาที</div>
+                    {s.staff_price != null && (
+                      <button
+                        className="btn ghost"
+                        style={{ width: 'auto', padding: '4px 10px', marginTop: 4, fontSize: 13 }}
+                        disabled={busy}
+                        onClick={() => addStaffPrice(s)}
+                      >
+                        <Icon name="plus" size={14} /> ราคาพนักงาน ({baht(s.staff_price)})
+                      </button>
+                    )}
                   </div>
                   <button disabled={busy || c === 0} onClick={() => removeOneOfService(s)} aria-label="ลดจำนวน"><Icon name="minus" size={20} /></button>
                   <span className="tnum" style={{ minWidth: 22, textAlign: 'center', fontWeight: 700 }}>{c}</span>
@@ -1595,13 +1790,82 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
         </>
       )}
 
+      {/* MONEY BREAKDOWN + BILL DISCOUNT (server-computed; never recompute client-side) */}
+      {!readOnly && items.length > 0 && (
+        <>
+          <div className="li">
+            <div className="grow"><div className="name">ราคารวม</div></div>
+            <div className="price tnum">{baht(t.items_gross)}</div>
+          </div>
+          {N(t.discount_total) > 0 && (
+            <div className="li">
+              <div className="grow"><div className="name">ส่วนลด</div></div>
+              <div className="price tnum" style={{ color: 'var(--rose-dark)' }}>-{baht(t.discount_total)}</div>
+            </div>
+          )}
+          <div className="card" style={{ marginTop: 8 }}>
+            <label>ส่วนลดบิล</label>
+            <div className="row" style={{ flexWrap: 'wrap' }}>
+              <button
+                className={'btn ' + (billDiscType === 'percent' ? 'secondary' : 'ghost')}
+                style={{ width: 'auto', padding: '8px 12px' }}
+                disabled={busy}
+                onClick={() => setBillDiscType('percent')}
+              >
+                %
+              </button>
+              <button
+                className={'btn ' + (billDiscType === 'baht' ? 'secondary' : 'ghost')}
+                style={{ width: 'auto', padding: '8px 12px' }}
+                disabled={busy}
+                onClick={() => setBillDiscType('baht')}
+              >
+                ฿
+              </button>
+              <input
+                type="number"
+                style={{ flex: 1, minWidth: 80 }}
+                value={billDiscVal}
+                onChange={(e) => setBillDiscVal(e.target.value)}
+                placeholder="0"
+              />
+              <button
+                className="btn"
+                style={{ width: 'auto', padding: '8px 14px' }}
+                disabled={busy || billDiscVal === ''}
+                onClick={() => applyBillDiscount(billDiscType, billDiscVal)}
+              >
+                ใช้ส่วนลด
+              </button>
+            </div>
+            {t.discount_type && N(t.bill_discount_amount) > 0 && (
+              <div className="meta" style={{ marginTop: 6 }}>
+                ส่วนลดบิลปัจจุบัน: <span className="tnum">{t.discount_type === 'percent' ? N(t.discount_value) + '%' : baht(t.discount_value)}</span> (<span className="tnum" style={{ color: 'var(--rose-dark)' }}>-{baht(t.bill_discount_amount)}</span>)
+                <button className="btn ghost" style={{ width: 'auto', padding: '4px 10px', marginLeft: 8 }} disabled={busy} onClick={clearBillDiscount}>ล้างส่วนลด</button>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
       {/* TOTAL */}
       <div className="total-bar">
-        <div className="t">ยอดรวม</div>
+        <div className="t">ยอดสุทธิ</div>
         <div className="v tnum">{baht(total)}</div>
       </div>
       {estMinutes > 0 && (
         <div className="meta center" style={{ marginTop: 2 }}><Icon name="clock" size={14} className="ico-inline" /> ~<span className="tnum">{estMinutes}</span> นาที</div>
+      )}
+
+      {/* OWNER-PIN OVERRIDE MODAL — shared by bill / item discount + staff price */}
+      {pendingOverride && (
+        <OverridePinModal
+          reason={pendingOverride.reason}
+          err={overrideErr}
+          busy={busy}
+          onSubmit={(pin) => pendingOverride.run(pin)}
+          onCancel={() => { setPendingOverride(null); setOverrideErr('') }}
+        />
       )}
 
       {/* LINE QUOTE STEP */}
@@ -1841,12 +2105,21 @@ function Receipt({ t }) {
         <div className="rl"><span>วันที่</span><span>{fmtDate(t.closed_at || t.created_at)}</span></div>
         <div className="div" />
         {items.map((it) => (
-          <div className="rl" key={it.id}>
-            <span>{it.service_name} ×{N(it.qty)}</span>
-            <span className="tnum">{baht(N(it.quoted_price) * N(it.qty))}</span>
+          <div key={it.id}>
+            <div className="rl">
+              <span>{it.service_name} ×{N(it.qty)}{it.is_staff_price ? ' (ราคาพนักงาน)' : ''}</span>
+              <span className="tnum">{baht(N(it.quoted_price) * N(it.qty))}</span>
+            </div>
+            {N(it.discount_amount) > 0 && (
+              <div className="rl"><span style={{ paddingLeft: 10, color: 'var(--rose-dark)' }}>ส่วนลดรายการ</span><span className="tnum" style={{ color: 'var(--rose-dark)' }}>-{baht(it.discount_amount)}</span></div>
+            )}
           </div>
         ))}
         <div className="div" />
+        <div className="rl"><span>ราคารวม</span><span className="tnum">{baht(t.items_gross)}</span></div>
+        {N(t.discount_total) > 0 && (
+          <div className="rl"><span style={{ color: 'var(--rose-dark)' }}>ส่วนลดรวม</span><span className="tnum" style={{ color: 'var(--rose-dark)' }}>-{baht(t.discount_total)}</span></div>
+        )}
         <div className="rl grand"><span>รวมทั้งสิ้น</span><span className="tnum">{baht(total)}</span></div>
         <div className="rl"><span>ชำระแล้ว</span><span className="tnum">{baht(paid)}</span></div>
         {lastPay && (
@@ -1857,6 +2130,73 @@ function Receipt({ t }) {
       <div className="spacer" />
       <div className="center muted">บิลนี้ปิดแล้ว <span className="badge closed">ปิดบิล</span></div>
     </>
+  )
+}
+
+/* ───────────────────────── Settings (owner) ─────────────────────────
+ * The four limits a พนักงาน can do WITHOUT owner approval. เจ้าของไม่จำกัด. */
+function Settings({ flash }) {
+  const [maxPct, setMaxPct] = useState('')
+  const [maxBaht, setMaxBaht] = useState('')
+  const [discQuota, setDiscQuota] = useState('')
+  const [staffQuota, setStaffQuota] = useState('')
+  const [usage, setUsage] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    api.getSettings()
+      .then((s) => {
+        setMaxPct(String(N(s.max_discount_percent)))
+        setMaxBaht(String(N(s.max_discount_baht)))
+        setDiscQuota(String(N(s.daily_discount_quota)))
+        setStaffQuota(String(N(s.daily_staff_price_quota)))
+        setLoading(false)
+      })
+      .catch(() => { setLoading(false); flash('โหลดการตั้งค่าไม่สำเร็จ') })
+    api.usageToday().then(setUsage).catch(() => setUsage(null))
+  }, [])
+
+  const save = () => {
+    setSaving(true)
+    api.updateSettings({
+      max_discount_percent: N(maxPct),
+      max_discount_baht: N(maxBaht),
+      daily_discount_quota: N(discQuota),
+      daily_staff_price_quota: N(staffQuota),
+    })
+      .then(() => { setSaving(false); flash('บันทึกการตั้งค่าแล้ว') })
+      .catch((e) => { setSaving(false); flash(e.status === 403 ? e.message : 'บันทึกไม่สำเร็จ: ' + e.message) })
+  }
+
+  if (loading) return <Loading />
+
+  return (
+    <div className="card">
+      <div className="meta" style={{ marginBottom: 10 }}>เพดาน/โควต้าที่พนักงานทำได้เองโดยไม่ต้องขออนุมัติเจ้าของ (เจ้าของไม่จำกัด)</div>
+
+      <label>เพดานส่วนลด (%)</label>
+      <input type="number" value={maxPct} onChange={(e) => setMaxPct(e.target.value)} placeholder="0" />
+
+      <label>เพดานส่วนลด (บาท)</label>
+      <input type="number" value={maxBaht} onChange={(e) => setMaxBaht(e.target.value)} placeholder="0" />
+
+      <label>โควต้าส่วนลดต่อวัน (ครั้ง)</label>
+      <input type="number" value={discQuota} onChange={(e) => setDiscQuota(e.target.value)} placeholder="0" />
+
+      <label>โควต้าราคาพนักงานต่อวัน (ครั้ง)</label>
+      <input type="number" value={staffQuota} onChange={(e) => setStaffQuota(e.target.value)} placeholder="0" />
+
+      {usage && (
+        <div className="meta" style={{ marginTop: 10 }}>
+          วันนี้: ส่วนลด <span className="tnum">{N(usage.discount)}</span> ครั้ง · ราคาพนักงาน <span className="tnum">{N(usage.staff_price)}</span> ครั้ง · อนุมัติ <span className="tnum">{N(usage.override)}</span> ครั้ง
+        </div>
+      )}
+
+      <div className="btn-row">
+        <button className="btn" disabled={saving} onClick={save}>{saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
+      </div>
+    </div>
   )
 }
 
