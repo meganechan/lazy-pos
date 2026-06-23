@@ -1762,7 +1762,7 @@ function Login({ onLoggedIn }) {
         <div className="login-logo">💅</div>
         <h1>Lazy Nail POS</h1>
         <div className="sub">
-          {step === 'shop' ? 'เลือกร้านเพื่อเข้าสู่ระบบ'
+          {step === 'shop' ? 'กรอกรหัสร้านเพื่อเข้าสู่ระบบ'
             : step === 'signup' ? 'สมัครร้านใหม่'
             : step === 'user' ? 'เลือกผู้ใช้ของร้าน'
             : 'ใส่ PIN เพื่อเข้าสู่ระบบ'}
@@ -1774,29 +1774,11 @@ function Login({ onLoggedIn }) {
           {newCode && (
             <div className="note-ok shop-code-banner">
               <Icon name="check-circle" size={18} className="ico-inline" /> สร้างร้านสำเร็จ — ร้านของคุณคือรหัส: <b>{newCode}</b>
-              <div className="meta" style={{ marginTop: 4 }}>เลือกร้านด้านล่างแล้วเข้าสู่ระบบด้วย PIN เจ้าของ</div>
+              <div className="meta" style={{ marginTop: 4 }}>กรอกรหัสร้านด้านล่างแล้วเข้าสู่ระบบด้วย PIN เจ้าของ</div>
             </div>
           )}
 
-          <div className="section-title">เลือกร้าน</div>
-          {!shops ? (
-            <Loading />
-          ) : shops.length === 0 ? (
-            <div className="empty"><div className="big"><Icon name="store" size={32} /></div>ยังไม่มีร้าน</div>
-          ) : (
-            shops.map((s) => (
-              <div className="li" key={s.id} onClick={() => chooseShop(s)}>
-                <div className="avatar"><Icon name="store" size={20} /></div>
-                <div className="grow">
-                  <div className="name">{s.name}</div>
-                  <div className="meta">รหัส: {s.code}</div>
-                </div>
-                <span className="chev"><Icon name="chevron-right" size={20} /></span>
-              </div>
-            ))
-          )}
-
-          <div className="section-title">หรือใส่ Shop code</div>
+          <div className="section-title">รหัสร้าน (Shop code)</div>
           <input
             value={code}
             onChange={(e) => { setShopErr(''); setCode(e.target.value) }}
