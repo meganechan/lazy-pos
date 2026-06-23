@@ -1359,7 +1359,26 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
       .catch((e) => { setBusy(false); flash('จำลองไม่สำเร็จ: ' + e.message) })
   }
 
-  const cancelBolt = () => { setBolt(null); setBoltErr(''); setBoltNotPaired(false) }
+  // Cancel: propagate to Beam so the paired EDC stops waiting for a card tap,
+  // THEN clear local state. Best-effort — if the cancel API fails we still clear
+  // the panel (so the cashier isn't stuck) but flash a warning. busy guards
+  // against double-taps. A live (non-mock) intent with a boltIntentId is what we
+  // need to cancel; mock / not-yet-created intents just clear locally.
+  const clearBolt = () => { setBolt(null); setBoltErr(''); setBoltNotPaired(false) }
+  const cancelBolt = () => {
+    const b = bolt
+    if (!b || b.mock || !b.boltIntentId) { clearBolt(); return }
+    setBusy(true)
+    api.cancelBoltIntent(id, b.payment_id)
+      .then((d) => {
+        setBusy(false)
+        if (d && d.ticket) setT(d.ticket)
+        if (d && d.beamError) flash('ยกเลิกที่เครื่องอาจไม่สำเร็จ: ' + d.beamError)
+        else flash('ยกเลิกการชำระแล้ว')
+        clearBolt()
+      })
+      .catch((e) => { setBusy(false); flash('ยกเลิกไม่สำเร็จ: ' + e.message); clearBolt() })
+  }
   const retryBolt = () => { const mode = bolt && bolt.mode; const pm = bolt && bolt.paymentMethodType; setBolt(null); setBoltErr(''); startBolt(mode, pm) }
 
   const closeBill = () => {
