@@ -885,9 +885,12 @@ app.put('/api/tickets/:id/assign', async (req, res) => {
   // §v0.8 — the technician must belong to this store too (no cross-tenant assign).
   if (assigned_user_id) {
     const tech = (await q(
-      'SELECT id FROM app_user WHERE id=$1 AND store_id=$2',
+      'SELECT id, role FROM app_user WHERE id=$1 AND store_id=$2',
       [assigned_user_id, req.user.storeId])).rows[0];
     if (!tech) return res.status(404).json({ error: 'user not found' });
+    // owner = manager only, cannot take jobs.
+    if (tech.role === 'owner')
+      return res.status(400).json({ error: 'owner cannot take jobs / เจ้าของร้านรับงานไม่ได้' });
   }
   await q('UPDATE ticket SET assigned_user_id=$2 WHERE id=$1 AND store_id=$3',
     [req.params.id, assigned_user_id || null, req.user.storeId]);
@@ -909,9 +912,12 @@ app.post('/api/tickets/:id/start', async (req, res) => {
   // §v0.8 — if a technician is being assigned, they must be in this store.
   if (tech) {
     const techRow = (await q(
-      'SELECT id FROM app_user WHERE id=$1 AND store_id=$2',
+      'SELECT id, role FROM app_user WHERE id=$1 AND store_id=$2',
       [tech, req.user.storeId])).rows[0];
     if (!techRow) return res.status(404).json({ error: 'user not found' });
+    // owner = manager only, cannot take jobs.
+    if (techRow.role === 'owner')
+      return res.status(400).json({ error: 'owner cannot take jobs / เจ้าของร้านรับงานไม่ได้' });
   }
   await recomputeEstMinutes(req.params.id);
   await q(
