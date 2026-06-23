@@ -1,38 +1,39 @@
 :root {
-  /* ── Soft UI Evolution tokens (muted aubergine + desaturated mauve) ── */
+  /* ── CI palette: orange + white + black (no pastel) ── */
 
-  /* accent: desaturated mauve/rose (was bright pink #e8557f) */
-  --rose: #9d6b83;
-  --rose-dark: #7f5169;
-  --rose-soft: #f1e8ed;
-  /* brand/primary: deep sophisticated aubergine/slate */
-  --primary: #36303f;
-  --primary-dark: #2a2533;
-  --ink: #2a2731;
-  --muted: #6f6877;          /* darkened from #867f8c → ≥4.5:1 on --bg / --surface */
-  --line: #e7e2e6;
-  --bg: #f6f5f3;
-  --ok: #437a5e;             /* darkened for ≥4.5:1 text contrast */
-  --warn: #8a6526;           /* darkened for ≥4.5:1 text contrast on tinted notes */
-  --bad: #a44e57;
+  /* accent / CTA / primary button = ORANGE (token name kept for JS/CSS reuse) */
+  --rose: #f97316;           /* CI orange accent */
+  --rose-dark: #ea580c;      /* hover / pressed orange */
+  --rose-soft: #fff3ea;      /* faint orange tint — avatar/chip only, used sparingly */
+  /* brand / topbar / login-head / primary surfaces = NEAR-BLACK */
+  --primary: #18181b;
+  --primary-dark: #0f1115;
+  --ink: #18181b;            /* text — ~16:1 on white */
+  --muted: #5c5f66;          /* ~5.8:1 on white */
+  --line: #e5e5e5;           /* hairline border on white */
+  --bg: #ffffff;             /* white background */
+  --ok: #15803d;             /* green-700 ≥4.5:1 on white */
+  --warn: #b45309;           /* amber-700 ≥4.5:1 on white */
+  --bad: #b42318;            /* red ≥4.5:1 on white */
   --card: #ffffff;
 
-  /* ── Semantic token set (section 2) — same hue family, re-pointed ── */
-  --accent: var(--rose);                 /* the mauve accent */
+  /* ── Semantic token set — orange/white/black ── */
+  --accent: var(--rose);                 /* the orange accent */
   --surface: #ffffff;                    /* primary card surface */
-  --surface-2: #faf9fb;                  /* subtle alt surface (table head, hovers) */
-  --on-primary: #ffffff;                 /* text on primary — ~12:1 on #36303f */
+  --surface-2: #fafafa;                  /* subtle alt surface (table head, hovers) */
+  --on-primary: #ffffff;                 /* text on near-black primary — ~16:1 */
+  --on-accent: #ffffff;                  /* text on orange CTA (bold ≥16px) */
   --on-danger: #ffffff;                  /* text on danger fills */
   --border: var(--line);
   --danger: var(--bad);
   --success: var(--ok);
   --warning: var(--warn);
-  --ring: #9d6b83;                       /* focus ring (mauve) */
+  --ring: #f97316;                       /* focus ring = CI orange */
 
-  /* ── Elevation: soft, layered, low-alpha shadows (NOT neumorphism) ── */
-  --shadow-sm: 0 1px 2px rgba(43,35,48,.06), 0 1px 3px rgba(43,35,48,.06);
-  --shadow-md: 0 2px 6px rgba(43,35,48,.08), 0 6px 16px rgba(43,35,48,.10);
-  --shadow-lg: 0 4px 12px rgba(43,35,48,.10), 0 16px 36px rgba(43,35,48,.14);
+  /* ── Elevation: soft, layered, low-alpha neutral shadows ── */
+  --shadow-sm: 0 1px 2px rgba(24,24,27,.06), 0 1px 3px rgba(24,24,27,.06);
+  --shadow-md: 0 2px 6px rgba(24,24,27,.08), 0 6px 16px rgba(24,24,27,.10);
+  --shadow-lg: 0 4px 12px rgba(24,24,27,.10), 0 16px 36px rgba(24,24,27,.14);
 
   /* ── Spacing rhythm (4 / 8px scale) ── */
   --space-1: 4px;
@@ -94,6 +95,15 @@ h1, h2, .name, .section-title { font-family: var(--font-display); }
   display: flex; align-items: center; gap: 10px;
 }
 .topbar .logo { font-size: 22px; }
+/* "owo" brand wordmark — inherits font-size, themes via currentColor + orange accent */
+.brand-logo {
+  font-family: var(--font-display);
+  font-weight: 800;
+  letter-spacing: -.04em;
+  line-height: 1;
+  color: currentColor;
+}
+.brand-logo .brand-logo-accent { color: var(--rose); }
 .topbar h1 { font-size: 18px; margin: 0; font-weight: 700; letter-spacing: .2px; }
 .topbar .sub { font-size: 12px; opacity: .85; margin-top: 1px; }
 .topbar .back { background: rgba(255,255,255,.2); border: none; color: #fff;
@@ -152,10 +162,10 @@ h1, h2, .name, .section-title { font-family: var(--font-display); }
 /* badges */
 .badge { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px;
   text-transform: uppercase; letter-spacing: .4px; }
-.badge.open { background: #e9ecf3; color: #5566a0; }
+.badge.open { background: #f3f4f6; color: #3f3f46; }
 .badge.in_progress { background: #f5ecdc; color: var(--warn); }
 .badge.done { background: #e6f0ea; color: var(--ok); }
-.badge.closed { background: #efedf1; color: var(--muted); }
+.badge.closed { background: #f3f4f6; color: var(--muted); }
 .badge.success { background: #e6f0ea; color: var(--ok); }
 .badge.failed { background: #f4e6e8; color: var(--bad); }
 .badge.pending { background: #f5ecdc; color: var(--warn); }
@@ -170,7 +180,7 @@ h1, h2, .name, .section-title { font-family: var(--font-display); }
 .btn:active { transform: translateY(1px); box-shadow: var(--shadow-sm); }
 .btn .icon { flex: none; }
 .btn.secondary { background: var(--rose-soft); color: var(--rose-dark); box-shadow: none; }
-.btn.secondary:hover { box-shadow: var(--shadow-sm); filter: none; background: #ece0e7; }
+.btn.secondary:hover { box-shadow: var(--shadow-sm); filter: none; background: #ffe9d6; }
 .btn.ghost { background: var(--surface); color: var(--ink); border: 1px solid var(--border); box-shadow: none; }
 .btn.ghost:hover { background: var(--surface-2); filter: none; box-shadow: var(--shadow-sm); }
 .btn.dark { background: var(--ink); color: var(--on-primary); }
@@ -211,7 +221,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   width: 36px; height: 36px; border-radius: var(--radius-sm); font-size: 20px; font-weight: 700;
   display: inline-flex; align-items: center; justify-content: center;
   transition: background .15s ease; }
-.svc button:hover:not(:disabled) { background: #ece0e7; }
+.svc button:hover:not(:disabled) { background: #ffe9d6; }
 
 /* totals */
 .total-bar { display: flex; justify-content: space-between; align-items: center;
@@ -289,7 +299,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 /* role badge */
 .rolebadge { vertical-align: middle; }
 .badge.role-owner { background: var(--rose-soft); color: var(--rose-dark); }
-.badge.role-staff { background: #e9ecf3; color: #5566a0; }
+.badge.role-staff { background: #f3f4f6; color: #3f3f46; }
 
 /* login screen */
 .login { max-width: 480px; margin: 0 auto; min-height: 100%;
