@@ -165,6 +165,23 @@ async function getSettings(storeId) {
   };
 }
 
+// getEffectiveSettings: the discount/quota limits that actually apply to a user.
+// §v1.3 — a per-staff override (staff_settings) wins field-by-field when set;
+// any NULL field falls back to the store default (store_settings).
+async function getEffectiveSettings(storeId, userId) {
+  const store = await getSettings(storeId);
+  const ov = (await q(
+    'SELECT * FROM staff_settings WHERE store_id=$1 AND user_id=$2',
+    [storeId, userId])).rows[0];
+  const pick = (f) => (ov && ov[f] != null ? Number(ov[f]) : Number(store[f]));
+  return {
+    max_discount_percent: pick('max_discount_percent'),
+    max_discount_baht: pick('max_discount_baht'),
+    daily_discount_quota: pick('daily_discount_quota'),
+    daily_staff_price_quota: pick('daily_staff_price_quota'),
+  };
+}
+
 // verifyOwnerPin: true if `pin` matches ANY active owner's PIN for this store.
 // Reuses verifyPin from ./auth.js (hashing untouched). Empty pin → false.
 async function verifyOwnerPin(storeId, pin) {
@@ -966,7 +983,7 @@ app.post('/api/tickets/:id/items', async (req, res) => {
     useStaffPrice = true;
     price = svc.staff_price;
     if (req.user.role !== 'owner') {
-      const { daily_staff_price_quota } = await getSettings(req.user.storeId);
+      const { daily_staff_price_quota } = await getEffectiveSettings(req.user.storeId, req.user.id);
       const used = await todayUsage(req.user.storeId, req.user.id, 'staff_price');
       if (used < daily_staff_price_quota) {
         await bumpUsage(req.user.storeId, req.user.id, 'staff_price');
@@ -1059,7 +1076,7 @@ app.delete('/api/tickets/:id/items/:itemId', async (req, res) => {
 // 'override'). reason = 'limit' (over ceiling) else 'quota'.
 async function checkDiscountPermission(user, type, value, override_pin) {
   if (user.role === 'owner') return { ok: true, overrode: false };
-  const s = await getSettings(user.storeId);
+  const s = await getEffectiveSettings(user.storeId, user.id);
   const dailyCount = await todayUsage(user.storeId, user.id, 'discount');
   const withinCeiling = type === 'percent'
     ? Number(value) <= Number(s.max_discount_percent)
@@ -1161,6 +1178,67 @@ app.put('/api/settings', requireOwner, async (req, res) => {
      daily_discount_quota, daily_staff_price_quota])).rows[0];
   await audit(req.user.id, req.user.storeId, 'settings_update', 'store_settings', req.user.storeId, row);
   res.json(row);
+});
+
+// §v1.3 — per-staff discount/quota overrides. Owner only. Lists every staff in
+// the store with their override row (nulls where unset) + the effective values
+// (override-or-store). The UI shows the store defaults as placeholders.
+app.get('/api/settings/staff', requireOwner, async (req, res) => {
+  const store = await getSettings(req.user.storeId);
+  const staff = (await q(
+    "SELECT id, name, role, active FROM app_user WHERE store_id=$1 AND role='staff' ORDER BY id",
+    [req.user.storeId])).rows;
+  const overrides = (await q(
+    'SELECT * FROM staff_settings WHERE store_id=$1', [req.user.storeId])).rows;
+  const byUser = new Map(overrides.map((o) => [o.user_id, o]));
+  const FIELDS = ['max_discount_percent', 'max_discount_baht', 'daily_discount_quota', 'daily_staff_price_quota'];
+  const list = staff.map((u) => {
+    const ov = byUser.get(u.id) || {};
+    const override = {}; const effective = {};
+    for (const f of FIELDS) {
+      override[f] = ov[f] == null ? null : Number(ov[f]);
+      effective[f] = ov[f] == null ? Number(store[f]) : Number(ov[f]);
+    }
+    return { user_id: u.id, name: u.name, active: u.active, override, effective };
+  });
+  res.json({ store, staff: list });
+});
+
+// §v1.3 — owner upserts one staff's overrides. Each field: '' / null → NULL
+// (fall back to the store value); a number → clamp (percent 0..100, others >=0).
+app.put('/api/settings/staff/:userId', requireOwner, async (req, res) => {
+  const u = (await q(
+    "SELECT id FROM app_user WHERE id=$1 AND store_id=$2 AND role='staff'",
+    [req.params.userId, req.user.storeId])).rows[0];
+  if (!u) return res.status(404).json({ error: 'staff not found' });
+  const b = req.body || {};
+  // null/'' stays null (fallback); otherwise coerce + clamp.
+  const opt = (x, max) => {
+    if (x == null || x === '') return null;
+    const n = Number(x);
+    if (!Number.isFinite(n)) return null;
+    return max != null ? clamp(n, 0, max) : Math.max(0, n);
+  };
+  const optInt = (x) => {
+    const v = opt(x, null);
+    return v == null ? null : Math.trunc(v);
+  };
+  const mp = opt(b.max_discount_percent, 100);
+  const mb = opt(b.max_discount_baht, null);
+  const dq = optInt(b.daily_discount_quota);
+  const sq = optInt(b.daily_staff_price_quota);
+  const row = (await q(
+    `INSERT INTO staff_settings
+       (store_id, user_id, max_discount_percent, max_discount_baht, daily_discount_quota, daily_staff_price_quota)
+     VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (store_id, user_id) DO UPDATE SET
+       max_discount_percent=$3, max_discount_baht=$4,
+       daily_discount_quota=$5, daily_staff_price_quota=$6, updated_at=now()
+     RETURNING *`,
+    [req.user.storeId, req.params.userId, mp, mb, dq, sq])).rows[0];
+  await audit(req.user.id, req.user.storeId, 'staff_settings_update', 'staff_settings', req.params.userId, row);
+  res.json({ user_id: Number(req.params.userId), override: { max_discount_percent: mp, max_discount_baht: mb, daily_discount_quota: dq, daily_staff_price_quota: sq },
+    effective: await getEffectiveSettings(req.user.storeId, Number(req.params.userId)) });
 });
 
 // §v1.2 — current user's usage counts for today (for the UI to show remaining).

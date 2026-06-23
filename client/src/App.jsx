@@ -2144,6 +2144,32 @@ function Settings({ flash }) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
+  // per-staff settings
+  const [storeDefaults, setStoreDefaults] = useState(null) // store effective defaults (from getStaffSettings)
+  const [staffList, setStaffList] = useState([]) // [{ user_id, name, active, override, effective }]
+  const [staffEdits, setStaffEdits] = useState({}) // { [user_id]: { max_discount_percent, max_discount_baht, daily_discount_quota, daily_staff_price_quota } }
+  const [staffSaving, setStaffSaving] = useState({}) // { [user_id]: bool }
+
+  const blank = (v) => (v == null ? '' : String(v))
+
+  const loadStaff = () =>
+    api.getStaffSettings()
+      .then((d) => {
+        setStoreDefaults(d.store)
+        setStaffList(d.staff || [])
+        const edits = {}
+        for (const st of d.staff || []) {
+          edits[st.user_id] = {
+            max_discount_percent: blank(st.override.max_discount_percent),
+            max_discount_baht: blank(st.override.max_discount_baht),
+            daily_discount_quota: blank(st.override.daily_discount_quota),
+            daily_staff_price_quota: blank(st.override.daily_staff_price_quota),
+          }
+        }
+        setStaffEdits(edits)
+      })
+      .catch(() => flash('โหลดการตั้งค่าต่อพนักงานไม่สำเร็จ'))
+
   useEffect(() => {
     api.getSettings()
       .then((s) => {
@@ -2155,6 +2181,7 @@ function Settings({ flash }) {
       })
       .catch(() => { setLoading(false); flash('โหลดการตั้งค่าไม่สำเร็จ') })
     api.usageToday().then(setUsage).catch(() => setUsage(null))
+    loadStaff()
   }, [])
 
   const save = () => {
@@ -2165,38 +2192,103 @@ function Settings({ flash }) {
       daily_discount_quota: N(discQuota),
       daily_staff_price_quota: N(staffQuota),
     })
-      .then(() => { setSaving(false); flash('บันทึกการตั้งค่าแล้ว') })
+      .then(() => { setSaving(false); flash('บันทึกการตั้งค่าแล้ว'); loadStaff() })
       .catch((e) => { setSaving(false); flash(e.status === 403 ? e.message : 'บันทึกไม่สำเร็จ: ' + e.message) })
+  }
+
+  const setEdit = (userId, field, value) => {
+    setStaffEdits((prev) => ({ ...prev, [userId]: { ...prev[userId], [field]: value } }))
+  }
+
+  const saveStaff = (st) => {
+    const userId = st.user_id
+    const e = staffEdits[userId] || {}
+    setStaffSaving((prev) => ({ ...prev, [userId]: true }))
+    api.updateStaffSettings(userId, {
+      max_discount_percent: e.max_discount_percent,
+      max_discount_baht: e.max_discount_baht,
+      daily_discount_quota: e.daily_discount_quota,
+      daily_staff_price_quota: e.daily_staff_price_quota,
+    })
+      .then(() => { setStaffSaving((prev) => ({ ...prev, [userId]: false })); flash('บันทึกค่าของ ' + st.name + ' แล้ว'); loadStaff() })
+      .catch((err) => { setStaffSaving((prev) => ({ ...prev, [userId]: false })); flash(err.status === 403 ? err.message : 'บันทึกไม่สำเร็จ: ' + err.message) })
   }
 
   if (loading) return <Loading />
 
+  const store = storeDefaults || {}
+
   return (
-    <div className="card">
-      <div className="meta" style={{ marginBottom: 10 }}>เพดาน/โควต้าที่พนักงานทำได้เองโดยไม่ต้องขออนุมัติเจ้าของ (เจ้าของไม่จำกัด)</div>
+    <>
+      <div className="card">
+        <h3 style={{ margin: '0 0 8px' }}>ค่าเริ่มต้นทั้งร้าน</h3>
+        <div className="meta" style={{ marginBottom: 10 }}>เพดาน/โควต้าที่พนักงานทำได้เองโดยไม่ต้องขออนุมัติเจ้าของ (เจ้าของไม่จำกัด)</div>
 
-      <label>เพดานส่วนลด (%)</label>
-      <input type="number" value={maxPct} onChange={(e) => setMaxPct(e.target.value)} placeholder="0" />
+        <label>เพดานส่วนลด (%)</label>
+        <input type="number" value={maxPct} onChange={(e) => setMaxPct(e.target.value)} placeholder="0" />
 
-      <label>เพดานส่วนลด (บาท)</label>
-      <input type="number" value={maxBaht} onChange={(e) => setMaxBaht(e.target.value)} placeholder="0" />
+        <label>เพดานส่วนลด (บาท)</label>
+        <input type="number" value={maxBaht} onChange={(e) => setMaxBaht(e.target.value)} placeholder="0" />
 
-      <label>โควต้าส่วนลดต่อวัน (ครั้ง)</label>
-      <input type="number" value={discQuota} onChange={(e) => setDiscQuota(e.target.value)} placeholder="0" />
+        <label>โควต้าส่วนลดต่อวัน (ครั้ง)</label>
+        <input type="number" value={discQuota} onChange={(e) => setDiscQuota(e.target.value)} placeholder="0" />
 
-      <label>โควต้าราคาพนักงานต่อวัน (ครั้ง)</label>
-      <input type="number" value={staffQuota} onChange={(e) => setStaffQuota(e.target.value)} placeholder="0" />
+        <label>โควต้าราคาพนักงานต่อวัน (ครั้ง)</label>
+        <input type="number" value={staffQuota} onChange={(e) => setStaffQuota(e.target.value)} placeholder="0" />
 
-      {usage && (
-        <div className="meta" style={{ marginTop: 10 }}>
-          วันนี้: ส่วนลด <span className="tnum">{N(usage.discount)}</span> ครั้ง · ราคาพนักงาน <span className="tnum">{N(usage.staff_price)}</span> ครั้ง · อนุมัติ <span className="tnum">{N(usage.override)}</span> ครั้ง
+        {usage && (
+          <div className="meta" style={{ marginTop: 10 }}>
+            วันนี้: ส่วนลด <span className="tnum">{N(usage.discount)}</span> ครั้ง · ราคาพนักงาน <span className="tnum">{N(usage.staff_price)}</span> ครั้ง · อนุมัติ <span className="tnum">{N(usage.override)}</span> ครั้ง
+          </div>
+        )}
+
+        <div className="btn-row">
+          <button className="btn" disabled={saving} onClick={save}>{saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
         </div>
-      )}
-
-      <div className="btn-row">
-        <button className="btn" disabled={saving} onClick={save}>{saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
       </div>
-    </div>
+
+      <div className="card">
+        <h3 style={{ margin: '0 0 8px' }}>ตั้งค่าต่อพนักงาน</h3>
+        <div className="meta" style={{ marginBottom: 10 }}>กำหนดเพดาน/โควต้าเฉพาะรายคน · ว่าง = ใช้ค่าร้าน</div>
+
+        {staffList.length === 0 ? (
+          <div className="meta">ยังไม่มีพนักงาน</div>
+        ) : (
+          staffList.map((st) => {
+            const e = staffEdits[st.user_id] || {}
+            const fields = [
+              { key: 'max_discount_percent', label: 'เพดานส่วนลด (%)' },
+              { key: 'max_discount_baht', label: 'เพดานส่วนลด (฿)' },
+              { key: 'daily_discount_quota', label: 'โควต้าส่วนลด/วัน' },
+              { key: 'daily_staff_price_quota', label: 'โควต้าราคาพนักงาน/วัน' },
+            ]
+            return (
+              <div key={st.user_id} style={{ borderTop: '1px solid var(--line, #eee)', paddingTop: 10, marginTop: 10 }}>
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>{st.name}</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {fields.map((f) => (
+                    <div key={f.key} style={{ flex: '1 1 120px', minWidth: 120 }}>
+                      <label>{f.label}</label>
+                      <input
+                        type="number"
+                        value={e[f.key] ?? ''}
+                        onChange={(ev) => setEdit(st.user_id, f.key, ev.target.value)}
+                        placeholder={store[f.key] == null ? '0' : String(store[f.key])}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <div className="btn-row">
+                  <button className="btn" disabled={!!staffSaving[st.user_id]} onClick={() => saveStaff(st)}>
+                    {staffSaving[st.user_id] ? 'กำลังบันทึก...' : 'บันทึก'}
+                  </button>
+                </div>
+              </div>
+            )
+          })
+        )}
+      </div>
+    </>
   )
 }
 
