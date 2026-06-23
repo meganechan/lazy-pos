@@ -1931,11 +1931,17 @@ function UserForm({ flash, u, onDone, onCancel }) {
   const [pin, setPin] = useState('')
   const [active, setActive] = useState(u ? u.active !== false : true)
   const [saving, setSaving] = useState(false)
+  const [pinErr, setPinErr] = useState('')
+
+  // PIN policy mirrors the server: 4–6 digits. Required on create; on edit only
+  // when a new PIN is typed (blank = keep current). Inline error, no server round-trip.
+  const pinNeedsCheck = !editing || pin.length > 0
+  const pinBad = pinNeedsCheck && !/^\d{4,6}$/.test(pin)
 
   const save = () => {
     if (!name.trim()) { flash('กรุณากรอกชื่อ'); return }
-    if (!editing && !/^\d{4,6}$/.test(pin)) { flash('PIN ต้องเป็นตัวเลข 4–6 หลัก'); return }
-    if (editing && pin && !/^\d{4,6}$/.test(pin)) { flash('PIN ต้องเป็นตัวเลข 4–6 หลัก'); return }
+    if (pinBad) { setPinErr('PIN ต้องเป็นตัวเลข 4–6 หลัก'); return }
+    setPinErr('')
 
     setSaving(true)
     if (editing) {
@@ -1967,9 +1973,10 @@ function UserForm({ flash, u, onDone, onCancel }) {
         type="tel"
         inputMode="numeric"
         value={pin}
-        onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+        onChange={(e) => { setPinErr(''); setPin(e.target.value.replace(/\D/g, '').slice(0, 6)) }}
         placeholder="••••"
       />
+      {pinErr && <div className="pin-err">{pinErr}</div>}
 
       {editing && (
         <>
