@@ -1121,6 +1121,45 @@ app.get('/api/tickets/:id/bolt-intent/:pid', requireAuth, async (req, res) => {
   });
 });
 
+// Cancel an in-flight Bolt Intent for a ticket's payment. The cashier hit
+// "ยกเลิก" on the POS — propagate the cancel to Beam so the paired EDC terminal
+// stops waiting for a card tap, then void the (still-pending) payment row.
+// requireAuth (staff drives checkout); store-scoped via the parent ticket.
+app.post('/api/tickets/:id/bolt-intent/:pid/cancel', requireAuth, async (req, res) => {
+  // Scope the payment via its parent ticket's store — cross-tenant → 404.
+  const p = (await q(
+    `SELECT p.* FROM payment p JOIN ticket t ON t.id = p.ticket_id
+      WHERE p.id=$1 AND p.ticket_id=$2 AND t.store_id=$3`,
+    [req.params.pid, req.params.id, req.user.storeId])).rows[0];
+  if (!p) return res.status(404).json({ error: 'payment not found' });
+
+  // boltIntentId was stored in beam_charge_id at creation time (PoC reuse).
+  const boltIntentId = p.beam_charge_id;
+  let beamError = null;
+  if (boltIntentId) {
+    try {
+      await beamBoltAdapter.cancelBoltIntent(boltIntentId);
+    } catch (e) {
+      // Best-effort: log + report, but still void our row so the POS isn't stuck.
+      beamError = String(e.message || e);
+      console.warn('[bolt-cancel]', beamError);
+    }
+  }
+
+  // Void the pending row (§3 'voided' enum) — same void logic as the manual void.
+  await q(
+    `UPDATE payment SET status='voided' WHERE id=$1 AND ticket_id=$2`,
+    [p.id, req.params.id]);
+  await audit(req.user.id, req.user.storeId, 'payment_void', 'payment', p.id,
+    { ticket_id: req.params.id, reason: 'bolt_cancel', bolt_intent_id: boltIntentId, beam_error: beamError });
+
+  res.json({
+    ok: true,
+    beamError, // null on success; a message if Beam cancel failed (row still voided)
+    ticket: await ticketDetail(req.params.id, req.user.storeId),
+  });
+});
+
 // §v0.6 — assign (or unassign) a technician to a ticket. Pass assigned_user_id
 // null to unassign. Does not change status or start the clock.
 app.put('/api/tickets/:id/assign', async (req, res) => {

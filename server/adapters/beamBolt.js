@@ -196,6 +196,38 @@ export function createBeamBoltAdapter(env = {}) {
       return { result: raw.result || '', raw };
     },
 
+    // cancelBoltIntent(boltIntentId)
+    //   -> Promise<{ canceled, mock? }>
+    //
+    // Cancels an in-flight intent so the paired EDC terminal stops waiting for a
+    // card tap when the cashier cancels the sale on the POS.
+    //
+    // LIVE-VERIFIED: PATCH {base}/api/v1/bolt-intents/{id}/cancel -> 202
+    //   { "message": "canceled" } (status -> CANCELED). MUST be PATCH;
+    //   POST/PUT/DELETE all return 405.
+    async cancelBoltIntent(boltIntentId) {
+      if (mock) {
+        return { canceled: true, mock: true };
+      }
+
+      const resp = await fetch(
+        base + '/api/v1/bolt-intents/' + encodeURIComponent(boltIntentId) + '/cancel',
+        {
+          method: 'PATCH',
+          headers: { Authorization: authHeader },
+        },
+      );
+
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '');
+        throw new Error(
+          `[beamBolt] cancelBoltIntent failed: ${resp.status} ${resp.statusText} ${text}`,
+        );
+      }
+
+      return { canceled: true };
+    },
+
     // verifyWebhookSignature(rawBodyBuffer, signatureHeader)
     //   -> { verified, skipped? }
     //

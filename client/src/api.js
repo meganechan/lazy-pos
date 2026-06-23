@@ -151,6 +151,9 @@ export const api = {
      else DEEP_LINK. pollBoltIntent appends ?simulate= only when supplied (mock demo). */
   createBoltIntent: (ticketId, body) => j(`/api/tickets/${ticketId}/bolt-intent`, { method: 'POST', body: JSON.stringify(body || {}) }),
   pollBoltIntent: (ticketId, pid, simulate) => j(`/api/tickets/${ticketId}/bolt-intent/${pid}` + (simulate ? '?simulate=' + encodeURIComponent(simulate) : '')),
+  // cancelBoltIntent: cashier hit "ยกเลิก" → tell Beam to cancel so the EDC stops
+  // waiting, and void the pending row. Returns { ok, beamError, ticket }.
+  cancelBoltIntent: (ticketId, pid) => j(`/api/tickets/${ticketId}/bolt-intent/${pid}/cancel`, { method: 'POST' }),
 
   close: (id) => j(`/api/tickets/${id}/close`, { method: 'POST' }),
 }
