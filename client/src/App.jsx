@@ -524,6 +524,8 @@ function Services({ flash, isOwner, canManage, ownerPhone, wide }) {
   const [edits, setEdits] = useState({}) // serviceId -> string price
   const [busy, setBusy] = useState(false)
   const [nav, setNav] = useState(null) // null | {kind:'new'} | {kind:'edit',s} | {kind:'detail',id}
+  const [migrateFor, setMigrateFor] = useState(null) // service pending a used-delete decision
+  const [migrateTo, setMigrateTo] = useState('') // target service id for migrate
 
   // owner-large management loads ALL services (active+inactive); others load active only
   const manageMode = wide && canManage
@@ -571,9 +573,33 @@ function Services({ flash, isOwner, canManage, ownerPhone, wide }) {
       .then((d) => load().then(() => {
         setBusy(false)
         if (d && d.mode === 'soft') flash && flash('บริการนี้มีประวัติการใช้ → ปิดการใช้งานแทนการลบ')
+        else if (d && d.mode === 'migrate') flash && flash('ย้ายแล้วลบ ' + N(d.migrated) + ' รายการ')
         else flash && flash('ลบบริการแล้ว')
       }))
-      .catch((e) => { setBusy(false); flash && flash(e.status === 403 ? e.message : 'ลบไม่สำเร็จ: ' + e.message) })
+      .catch((e) => {
+        setBusy(false)
+        // used in past bills → server returns 409 needs_migrate → open the migrate dialog
+        if (e.status === 409) { setMigrateTo(''); setMigrateFor({ ...s, _count: e.body && e.body.count }); return }
+        flash && flash(e.status === 403 ? e.message : 'ลบไม่สำเร็จ: ' + e.message)
+      })
+  }
+
+  const doMigrate = () => {
+    const s = migrateFor
+    if (!s || migrateTo === '') return
+    setBusy(true)
+    api.deleteService(s.id, { migrate_to: Number(migrateTo) })
+      .then((d) => { setMigrateFor(null); return load().then(() => { setBusy(false); flash && flash('ย้ายแล้วลบ ' + N(d && d.migrated) + ' รายการ') }) })
+      .catch((e) => { setBusy(false); flash && flash(e.status === 403 ? e.message : 'ย้ายไม่สำเร็จ: ' + e.message) })
+  }
+
+  const doArchive = () => {
+    const s = migrateFor
+    if (!s) return
+    setBusy(true)
+    api.deleteService(s.id, { archive: true })
+      .then(() => { setMigrateFor(null); return load().then(() => { setBusy(false); flash && flash('ปิดการใช้งานแล้ว') }) })
+      .catch((e) => { setBusy(false); flash && flash(e.status === 403 ? e.message : 'ปิดการใช้งานไม่สำเร็จ: ' + e.message) })
   }
 
   // owner + large → management table with inline price edit + full CRUD
@@ -583,6 +609,28 @@ function Services({ flash, isOwner, canManage, ownerPhone, wide }) {
         <div className="btn-row" style={{ marginTop: 0, marginBottom: 12 }}>
           <button className="btn" style={{ width: 'auto', padding: '12px 18px' }} onClick={() => setNav({ kind: 'new' })}><Icon name="plus" size={20} /> เพิ่มบริการ</button>
         </div>
+        {migrateFor && (
+          <div className="card" style={{ marginBottom: 12 }}>
+            <div className="name" style={{ fontWeight: 600 }}>ลบบริการ "{migrateFor.name}"</div>
+            <div className="meta" style={{ marginTop: 4, marginBottom: 12 }}>
+              บริการนี้มีประวัติการใช้งานในบิล{migrateFor._count != null ? ' (' + N(migrateFor._count) + ' รายการ)' : ''} จึงลบทันทีไม่ได้ — เลือกย้ายรายการเก่าไปบริการอื่น หรือปิดใช้งานเพื่อเก็บประวัติ
+            </div>
+            <label>ย้ายรายการเก่าไปยัง</label>
+            <select value={migrateTo} onChange={(e) => setMigrateTo(e.target.value)} style={{ width: '100%', padding: '13px 14px', borderRadius: 12, border: '1px solid var(--line)', fontSize: 16, fontFamily: 'inherit', background: '#fff', color: 'var(--ink)' }}>
+              <option value="">— เลือกบริการ —</option>
+              {(list || []).filter((x) => x.id !== migrateFor.id && x.active !== false).map((x) => (
+                <option key={x.id} value={x.id}>{x.name}</option>
+              ))}
+            </select>
+            <div className="btn-row">
+              <button className="btn" disabled={busy || migrateTo === ''} onClick={doMigrate}>ย้ายและลบ</button>
+              <button className="btn dark" disabled={busy} onClick={doArchive}>ปิดใช้งานแทน (เก็บประวัติ)</button>
+            </div>
+            <div className="btn-row" style={{ marginTop: 0 }}>
+              <button className="btn ghost" disabled={busy} onClick={() => setMigrateFor(null)}>ยกเลิก</button>
+            </div>
+          </div>
+        )}
         {list.length === 0 ? (
           <div className="empty"><div className="big"><Icon name="sparkles" size={32} /></div>ยังไม่มีบริการ</div>
         ) : (
@@ -718,15 +766,22 @@ function ServiceForm({ flash, s, categories, onDone, onCancel }) {
 
       <label>หมวด</label>
       <input list="svc-cat-list" value={category} onChange={(e) => setCategory(e.target.value)} placeholder="เช่น เจล, ต่อเล็บ, สปา" />
+      <div className="meta" style={{ marginTop: -6, marginBottom: 8 }}>เลือกจากที่มี หรือพิมพ์หมวดใหม่ได้</div>
       <datalist id="svc-cat-list">
         {(categories || []).map((c) => <option key={c} value={c} />)}
       </datalist>
 
-      <label>ราคา (บาท)</label>
-      <input type="number" value={basePrice} onChange={(e) => setBasePrice(e.target.value)} placeholder="0" />
-
-      <label>เวลา (นาที)</label>
-      <input type="number" value={durationMin} onChange={(e) => setDurationMin(e.target.value)} placeholder="0" />
+      <div style={{ display: 'flex', gap: 12 }}>
+        <div style={{ flex: 1 }}>
+          <label>ราคา (บาท)</label>
+          <input type="number" value={basePrice} onChange={(e) => setBasePrice(e.target.value)} placeholder="0" />
+        </div>
+        <div style={{ flex: 1 }}>
+          <label>เวลา (นาที)</label>
+          <input type="number" value={durationMin} onChange={(e) => setDurationMin(e.target.value)} placeholder="0" />
+          <div className="meta" style={{ marginTop: -6, marginBottom: 8 }}>เวลาโดยประมาณต่อ 1 ครั้ง</div>
+        </div>
+      </div>
 
       <label>รายละเอียด</label>
       <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="รายละเอียดงาน / เงื่อนไข / หมายเหตุ" rows={4} style={{ width: '100%', padding: '13px 14px', borderRadius: 12, border: '1px solid var(--line)', fontSize: 16, fontFamily: 'inherit', background: '#fff', color: 'var(--ink)', resize: 'vertical' }} />
@@ -1061,6 +1116,11 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   const [optSel, setOptSel] = useState({}) // itemId -> { [optionId]: true } selected add-ons
   const [techs, setTechs] = useState([]) // [{id,name,role}] for assign prompt
   const [reconcile, setReconcile] = useState(null) // pid that needs manual reconcile (key expired)
+  // free-style "ตามสั่ง" line item inline form
+  const [customOpen, setCustomOpen] = useState(false)
+  const [cName, setCName] = useState('')
+  const [cPrice, setCPrice] = useState('')
+  const [cMin, setCMin] = useState('')
 
   const refresh = () => api.ticket(id).then(setT)
 
@@ -1206,6 +1266,15 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
     setBusy(true)
     api.addItem(id, { service_id: s.id, qty: 1, quoted_price: N(s.base_price) })
       .then((d) => { setT(d); setBusy(false) })
+      .catch((e) => { setBusy(false); flash('เพิ่มไม่สำเร็จ: ' + e.message) })
+  }
+
+  const addCustom = () => {
+    if (!cName.trim()) { flash('กรอกชื่อรายการ'); return }
+    if (cPrice === '' || isNaN(N(cPrice))) { flash('กรอกราคา'); return }
+    setBusy(true)
+    api.addCustomItem(id, { name: cName.trim(), quoted_price: N(cPrice), qty: 1, minutes: cMin === '' ? undefined : N(cMin) })
+      .then((d) => { setT(d); setBusy(false); setCName(''); setCPrice(''); setCMin(''); setCustomOpen(false); flash('เพิ่มรายการตามสั่งแล้ว') })
       .catch((e) => { setBusy(false); flash('เพิ่มไม่สำเร็จ: ' + e.message) })
   }
 
@@ -1411,7 +1480,7 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
         items.map((it) => (
           <div className="li" key={it.id}>
             <div className="grow">
-              <div className="name">{it.service_name} {it.category && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>{it.category}</span>}</div>
+              <div className="name">{it.service_name} {it.is_custom && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>ตามสั่ง</span>} {it.category && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>{it.category}</span>}</div>
               <div className="meta">จำนวน <span className="tnum">{N(it.qty)}</span> · <Icon name="clock" size={14} className="ico-inline" /> <span className="tnum">{N(it.minutes)}</span> นาที</div>
             </div>
             <div className="price tnum">{baht(N(it.quoted_price) * N(it.qty))}</div>
@@ -1422,7 +1491,7 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
           <div className="card" key={it.id}>
             <div className="row">
               <div className="grow">
-                <div className="name">{it.service_name} {it.category && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>{it.category}</span>}</div>
+                <div className="name">{it.service_name} {it.is_custom && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>ตามสั่ง</span>} {it.category && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>{it.category}</span>}</div>
                 <div className="meta">จำนวน <span className="tnum">{N(it.qty)}</span> · <Icon name="clock" size={14} className="ico-inline" /> <span className="tnum">{N(it.minutes)}</span> นาที</div>
               </div>
               <button className="btn ghost" style={{ width: 'auto', padding: '8px 12px' }} onClick={() => removeItem(it.id)}>ลบ</button>
@@ -1505,6 +1574,23 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
                 </div>
               )
             })
+          )}
+          {/* FREE-STYLE "ตามสั่ง" line item */}
+          {!customOpen ? (
+            <button className="btn ghost" style={{ marginTop: 10 }} onClick={() => setCustomOpen(true)}><Icon name="plus" size={20} /> รายการตามสั่ง</button>
+          ) : (
+            <div className="card" style={{ marginTop: 10 }}>
+              <label>ชื่อรายการ</label>
+              <input value={cName} onChange={(e) => setCName(e.target.value)} placeholder="เช่น แต่งลายพิเศษ" />
+              <label>ราคา (บาท)</label>
+              <input type="number" value={cPrice} onChange={(e) => setCPrice(e.target.value)} placeholder="0" />
+              <label>เวลา (นาที) — ไม่บังคับ</label>
+              <input type="number" value={cMin} onChange={(e) => setCMin(e.target.value)} placeholder="0" />
+              <div className="btn-row">
+                <button className="btn ghost" disabled={busy} onClick={() => { setCustomOpen(false); setCName(''); setCPrice(''); setCMin('') }}>ยกเลิก</button>
+                <button className="btn" disabled={busy} onClick={addCustom}>เพิ่ม</button>
+              </div>
+            </div>
           )}
         </>
       )}

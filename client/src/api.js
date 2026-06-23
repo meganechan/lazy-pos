@@ -108,7 +108,7 @@ export const api = {
   updateService: (id, body) => j(`/api/services/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   serviceDetail: (id) => j(`/api/services/${id}`),
   createService: (body) => j('/api/services', { method: 'POST', body: JSON.stringify(body) }),
-  deleteService: (id) => j(`/api/services/${id}`, { method: 'DELETE' }),
+  deleteService: (id, opts) => j(`/api/services/${id}`, { method: 'DELETE', ...(opts ? { body: JSON.stringify(opts) } : {}) }),
   addOption: (sid, body) => j(`/api/services/${sid}/options`, { method: 'POST', body: JSON.stringify(body) }),
   updateOption: (sid, oid, body) => j(`/api/services/${sid}/options/${oid}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteOption: (sid, oid) => j(`/api/services/${sid}/options/${oid}`, { method: 'DELETE' }),
@@ -125,6 +125,7 @@ export const api = {
   ticket: (id) => j(`/api/tickets/${id}`),
   newTicket: (body) => j('/api/tickets', { method: 'POST', body: JSON.stringify(body) }),
   addItem: (id, body) => j(`/api/tickets/${id}/items`, { method: 'POST', body: JSON.stringify(body) }),
+  addCustomItem: (id, body) => j(`/api/tickets/${id}/custom-item`, { method: 'POST', body: JSON.stringify(body) }),
   updateItem: (ticketId, itemId, body) => j(`/api/tickets/${ticketId}/items/${itemId}`, { method: 'PUT', body: JSON.stringify(body) }),
   delItem: (id, itemId) => j(`/api/tickets/${id}/items/${itemId}`, { method: 'DELETE' }),
 
