@@ -35,6 +35,7 @@ const ICONS = {
   'loader': <><line x1="12" y1="2" x2="12" y2="6" /><line x1="12" y1="18" x2="12" y2="22" /><line x1="4.9" y1="4.9" x2="7.8" y2="7.8" /><line x1="16.2" y1="16.2" x2="19.1" y2="19.1" /><line x1="2" y1="12" x2="6" y2="12" /><line x1="18" y1="12" x2="22" y2="12" /><line x1="4.9" y1="19.1" x2="7.8" y2="16.2" /><line x1="16.2" y1="7.8" x2="19.1" y2="4.9" /></>,
   'delete': <><path d="M21 4H8L1 12l7 8h13a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2Z" /><line x1="18" y1="9" x2="12" y2="15" /><line x1="12" y1="9" x2="18" y2="15" /></>,
   'send': <><path d="M22 2 11 13" /><path d="M22 2 15 22l-4-9-9-4Z" /></>,
+  'qr-code': <><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><path d="M14 14h3v3" /><path d="M21 14v7h-7" /><path d="M17 17h.01" /></>,
 }
 
 function Icon({ name, size = 24, className }) {
@@ -1051,9 +1052,7 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   const [t, setT] = useState(null)
   const [services, setServices] = useState([])
   const [busy, setBusy] = useState(false)
-  const [edcStep, setEdcStep] = useState(false) // showing EDC simulate buttons
-  const [payFail, setPayFail] = useState(false) // EDC failed -> show fallback
-  const [bolt, setBolt] = useState(null) // Beam Bolt PoC panel: { payment_id, boltIntentId, deepLinkUrl, mode, mock } | null
+  const [bolt, setBolt] = useState(null) // Beam Bolt card/QR panel: { payment_id, boltIntentId, deepLinkUrl, mode, mock } | null
   const [boltErr, setBoltErr] = useState('') // inline Bolt failure message (failure enum)
   const [boltPaired, setBoltPaired] = useState(false) // shop has a paired EDC device → default PAIRING + offer QR fallback
   const [boltNotPaired, setBoltNotPaired] = useState(false) // create returned 400 ร้านยังไม่ได้ pair → owner-must-pair hint
@@ -1262,35 +1261,18 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
       .catch((e) => { setBusy(false); flash('ยืนยันไม่สำเร็จ: ' + e.message) })
   }
 
-  const doPay = (method, simulate) => {
+  // Cash / unpaid only. Card payments go through the Beam Bolt flow (startBolt).
+  const doPay = (method) => {
     setBusy(true)
-    const body = { method, amount: total }
-    if (simulate) body.simulate = simulate
-    api.pay(id, body)
+    api.pay(id, { method, amount: total })
       .then((d) => {
-        setT(d); setBusy(false); setEdcStep(false)
-        // server returns 200 even when an EDC charge fails — detect via the row status
-        const last = (d.payments || [])[(d.payments || []).length - 1]
-        if (method === 'beam_edc' && last && last.status === 'failed') {
-          setPayFail(true)
-          flash('EDC ล้มเหลว — เลือก fallback')
-          return
-        }
-        setPayFail(false)
-        if (method === 'cash') flash('ชำระเงินสดสำเร็จ')
-        else if (method === 'beam_edc') flash('ชำระผ่านบัตรสำเร็จ')
-        else flash('บันทึกเป็นค้างชำระแล้ว')
+        setT(d); setBusy(false)
+        flash(method === 'cash' ? 'ชำระเงินสดสำเร็จ' : 'บันทึกเป็นค้างชำระแล้ว')
       })
       .catch((e) => {
         setBusy(false)
-        if (method === 'beam_edc') {
-          setPayFail(true)
-          setEdcStep(false)
-          flash('EDC ล้มเหลว — เลือก fallback')
-        } else {
-          flash('ชำระไม่สำเร็จ: ' + e.message)
-        }
-        // refresh to capture failed payment row if backend stored it
+        flash('ชำระไม่สำเร็จ: ' + e.message)
+        // refresh to capture any payment row the backend may have stored
         refresh().catch(() => {})
       })
   }
@@ -1692,39 +1674,6 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
                   </>
                 )}
               </div>
-            ) : edcStep ? (
-              <div className="card">
-                <div className="center" style={{ color: 'var(--accent)' }}><Icon name="credit-card" size={32} /></div>
-                <div className="center muted" style={{ marginBottom: 10 }}>กำลังรูดบัตรผ่านเครื่อง Beam EDC / Bolt...</div>
-                <div className="btn-row">
-                  <button className="btn" disabled={busy} onClick={() => doPay('beam_edc')}><Icon name="check" size={20} /> จำลองสำเร็จ</button>
-                  <button className="btn dark" disabled={busy} onClick={() => doPay('beam_edc', 'fail')}><Icon name="alert-triangle" size={20} /> จำลองล้มเหลว</button>
-                </div>
-                <div className="btn-row">
-                  <button className="btn ghost" disabled={busy} onClick={() => setEdcStep(false)}>ยกเลิก</button>
-                </div>
-              </div>
-            ) : payFail ? (
-              <div className="card">
-                <div className="center" style={{ color: 'var(--danger)' }}><Icon name="alert-triangle" size={28} /></div>
-                <div className="center" style={{ color: 'var(--bad)', fontWeight: 700 }}>EDC ล้มเหลว</div>
-                <div className="center muted" style={{ marginBottom: 10 }}>บิลไม่ค้าง — เลือกวิธีสำรองได้เลย</div>
-                <div className="pay-grid">
-                  <div className="pay" onClick={() => doPay('cash')}>
-                    <div className="ico"><Icon name="banknote" size={20} /></div>
-                    <div className="grow"><div>เงินสด</div><div className="desc">รับเป็นเงินสด</div></div>
-                    <div className="price tnum">{baht(total)}</div>
-                  </div>
-                  <div className="pay" onClick={() => doPay('unpaid')}>
-                    <div className="ico"><Icon name="clock" size={20} /></div>
-                    <div className="grow"><div>ค้างชำระ</div><div className="desc">ไว้จ่ายภายหลัง</div></div>
-                  </div>
-                  <div className="pay" onClick={() => { setPayFail(false); setEdcStep(true) }}>
-                    <div className="ico"><Icon name="rotate-ccw" size={20} /></div>
-                    <div className="grow"><div>ลองรูดบัตรอีกครั้ง</div><div className="desc">Beam EDC</div></div>
-                  </div>
-                </div>
-              </div>
             ) : boltNotPaired ? (
               <div className="card">
                 <div className="center" style={{ fontSize: 28 }}>💳</div>
@@ -1741,37 +1690,33 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
               <div className="pay-grid">
                 <div className="pay" onClick={() => doPay('cash')}>
                   <div className="ico"><Icon name="banknote" size={20} /></div>
-                  <div className="grow"><div>เงินสด</div><div className="desc">Cash</div></div>
+                  <div className="grow"><div>เงินสด</div><div className="desc">รับเป็นเงินสด</div></div>
                   <div className="price tnum">{baht(total)}</div>
-                </div>
-                <div className="pay" onClick={() => setEdcStep(true)}>
-                  <div className="ico"><Icon name="credit-card" size={20} /></div>
-                  <div className="grow"><div>บัตร (Beam EDC)</div><div className="desc">รูดบัตรเครดิต/เดบิต</div></div>
                 </div>
                 {boltPaired ? (
                   <>
                     <div className="pay" onClick={() => startBolt('PAIRING', 'CARD')}>
-                      <div className="ico">💳</div>
-                      <div className="grow"><div>รูดบัตรที่เครื่อง (Beam EDC) [PoC]</div><div className="desc">เครื่องที่จับคู่ไว้ — เสียบ/แตะบัตร</div></div>
+                      <div className="ico"><Icon name="credit-card" size={20} /></div>
+                      <div className="grow"><div>บัตร (รูดที่เครื่อง EDC)</div><div className="desc">เสียบ/แตะบัตรที่เครื่องที่จับคู่ไว้</div></div>
                     </div>
                     <div className="pay" onClick={() => startBolt('PAIRING', 'QR_PROMPT_PAY')}>
-                      <div className="ico">💳</div>
-                      <div className="grow"><div>QR ที่เครื่อง (Beam EDC) [PoC]</div><div className="desc">โชว์ QR PromptPay บนเครื่อง EDC</div></div>
+                      <div className="ico"><Icon name="qr-code" size={20} /></div>
+                      <div className="grow"><div>QR ที่เครื่อง EDC</div><div className="desc">โชว์ QR PromptPay บนหน้าจอเครื่อง</div></div>
                     </div>
                     <div className="pay" onClick={() => startBolt('DEEP_LINK')}>
-                      <div className="ico">📱</div>
-                      <div className="grow"><div>QR (มือถือ) · PromptPay [PoC]</div><div className="desc">ให้ลูกค้าสแกน QR บนมือถือ</div></div>
+                      <div className="ico"><Icon name="smartphone" size={20} /></div>
+                      <div className="grow"><div>QR PromptPay (มือถือ)</div><div className="desc">ให้ลูกค้าสแกนบนมือถือ</div></div>
                     </div>
                   </>
                 ) : (
                   <div className="pay" onClick={() => startBolt('DEEP_LINK')}>
-                    <div className="ico">📱</div>
-                    <div className="grow"><div>บัตร (Beam Bolt · QR มือถือ) [PoC]</div><div className="desc">สแกน QR PromptPay เพื่อชำระ</div></div>
+                    <div className="ico"><Icon name="qr-code" size={20} /></div>
+                    <div className="grow"><div>บัตร / QR PromptPay</div><div className="desc">สแกน QR PromptPay เพื่อชำระ</div></div>
                   </div>
                 )}
                 <div className="pay" onClick={() => doPay('unpaid')}>
                   <div className="ico"><Icon name="clock" size={20} /></div>
-                  <div className="grow"><div>ค้างชำระ</div><div className="desc">Unpaid</div></div>
+                  <div className="grow"><div>ค้างชำระ</div><div className="desc">ไว้จ่ายภายหลัง</div></div>
                 </div>
               </div>
             )
