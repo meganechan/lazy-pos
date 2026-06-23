@@ -49,6 +49,11 @@ as **owner**.
 | 40 | `40-service-detail-addons.png` | Service detail — description + add-on options manager |
 | 41 | `41-ticket-option-select.png` | Ticket item — add-on checkbox folds +฿/+min into price/time |
 | 42 | `42-owner-iphone-services-readonly.png` | owner iPhone — services read-only + manage hint |
+| 43 | `43-shop-login.png` | Multi-tenant shop login — pick shop or enter shop code (v0.8) |
+| 44 | `44-signup-form.png` | New-shop signup — shop name + owner + PIN |
+| 45 | `45-signup-success.png` | Signup success — assigned shop code, new shop in list |
+| 46 | `46-shop-users-scoped.png` | User picker scoped to one shop (no cross-shop leak) |
+| 47 | `47-store-b-isolated.png` | New shop logged in — ฿0 / 0 data, isolated from store #1 |
 
 > **RBAC (v0.4)**: PIN login per user (scrypt-hashed — separate from the SACRED
 > idempotency hash), in-memory session token sent as `Authorization: Bearer`.
@@ -75,6 +80,13 @@ as **owner**.
 > soft-deleted (active=false, hidden from the menu) while an unused one is hard-deleted.
 > On a ticket, ticking an add-on folds its +฿/+min into the item's quoted_price/minutes.
 > Owner-only (server-enforced); managed on large screens, read-only on phone.
+>
+> **Multi-tenant SaaS (v0.8)**: store = tenant. The session is bound to the user's
+> store_id and EVERY query is scoped by it — a user of shop A requesting shop B's
+> ids gets 404 (verified end-to-end). Login is shop-scoped (pick shop / enter shop
+> code → only that shop's users → PIN), and anyone can sign up a new shop (gets a
+> unique shop code + default services). Demo shop = store #1 (code LAZY01). Server
+> enforces isolation; RBAC/payment/queue logic unchanged — store scope is an outer layer.
 >
 > Payment is decoupled from closing the sale (spec §1): EDC failure offers
 > cash / unpaid fallback so a ticket never gets stuck. Beam & LINE are mocked

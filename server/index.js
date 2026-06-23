@@ -44,6 +44,10 @@ async function bootstrap() {
     await q(seed);
     console.log('[bootstrap] seeded demo data');
   }
+  // §v0.8 — keep store #1 as the demo tenant. Give it a stable shop code so the
+  // shop-login picker can find it. Only set if it exists with a NULL code.
+  await q(
+    "UPDATE store SET code='LAZY01' WHERE id=1 AND code IS NULL");
   // Demo users seeded from JS (not seed.sql) because PIN hashing lives in JS.
   // PINs are stored scrypt-hashed — never log the raw PINs.
   const { rows: userRows } = await q('SELECT count(*)::int AS n FROM app_user');
@@ -112,6 +116,9 @@ function itemMinutes(row) {
 // §v0.6 — recompute ticket.est_minutes = Σ(effective minutes × qty) from live
 // items (per-item minutes, falling back to service.duration_min). Persists and
 // returns the new total.
+// §v0.8 — store-scoped: only recompute over items belonging to this store's
+// ticket. The UPDATE is constrained to the ticket id (already store-scoped by
+// the caller that resolved it).
 async function recomputeEstMinutes(ticketId) {
   const rows = (await q(
     `SELECT ti.minutes, ti.qty, s.duration_min
@@ -122,8 +129,12 @@ async function recomputeEstMinutes(ticketId) {
   return est;
 }
 
-async function ticketDetail(id) {
-  const t = (await q('SELECT * FROM ticket WHERE id=$1', [id])).rows[0];
+// §v0.8 — store-scoped ticket detail. storeId constrains the parent ticket
+// lookup; if the ticket is not in this store (or absent) → null (caller 404s).
+// All child rows (member, items, payments, quote) hang off this scoped ticket.
+async function ticketDetail(id, storeId) {
+  const t = (await q(
+    'SELECT * FROM ticket WHERE id=$1 AND store_id=$2', [id, storeId])).rows[0];
   if (!t) return null;
   const member = t.member_id
     ? (await q('SELECT * FROM member WHERE id=$1', [t.member_id])).rows[0]
@@ -180,17 +191,66 @@ function requireOwner(req, res, next) {
   next();
 }
 
+// §v0.8 — generate a short, unique, uppercased alphanumeric shop code. Avoids
+// ambiguous chars (0/O, 1/I). Retries on the (unlikely) unique-index collision.
+function randomShopCode(len = 6) {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let s = '';
+  for (let i = 0; i < len; i++)
+    s += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return s;
+}
+
+// §v0.8 — standard starter service catalog copied into every new store on signup
+// so the shop is usable immediately. (Mirrors the demo seed set.)
+const DEFAULT_SERVICES = [
+  ['Classic Manicure', 'Manicure', 350, 40],
+  ['Gel Manicure', 'Manicure', 650, 60],
+  ['Classic Pedicure', 'Pedicure', 450, 50],
+  ['Gel Pedicure', 'Pedicure', 750, 70],
+  ['Nail Art (per nail)', 'Art', 80, 15],
+  ['Gel Removal', 'Care', 150, 20],
+  ['Hand Spa & Paraffin', 'Spa', 500, 45],
+  ['Acrylic Extension', 'Extension', 1200, 120],
+];
+
 // ---- PUBLIC API (no token) ----
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
-// Login picker — active users only, minimal shape.
-app.get('/api/auth/users', async (_req, res) => {
+// §v0.8 — list shops for the login picker. Shop name/code are NOT sensitive;
+// user lists are (see /api/auth/users which now requires a store filter).
+app.get('/api/auth/shops', async (_req, res) => {
   const rows = (await q(
-    'SELECT id, name, role FROM app_user WHERE active ORDER BY role, name')).rows;
+    'SELECT id, code, name FROM store WHERE code IS NOT NULL ORDER BY name')).rows;
+  res.json(rows);
+});
+
+// §v0.8 — shop-scoped login picker. REQUIRES ?store_id=<id> or ?code=<code>;
+// returns ONLY that store's active users. Without a store filter → [] (no
+// cross-shop user-list leakage).
+app.get('/api/auth/users', async (req, res) => {
+  const { store_id, code } = req.query;
+  let storeId = null;
+  if (store_id != null && String(store_id).trim() !== '') {
+    storeId = Number(store_id);
+    if (!Number.isInteger(storeId)) return res.json([]);
+  } else if (code != null && String(code).trim() !== '') {
+    const s = (await q(
+      'SELECT id FROM store WHERE code=$1', [String(code).trim()])).rows[0];
+    if (!s) return res.json([]);
+    storeId = s.id;
+  } else {
+    return res.json([]);
+  }
+  const rows = (await q(
+    'SELECT id, name, role FROM app_user WHERE store_id=$1 AND active ORDER BY role, name',
+    [storeId])).rows;
   res.json(rows);
 });
 
 // Login — verify PIN, issue session token. Audits 'login' on success.
+// §v0.8 — userId already implies a store; the issued session carries that
+// store_id and the response user includes store_id.
 app.post('/api/auth/login', async (req, res) => {
   const { userId, pin } = req.body || {};
   if (userId == null || pin == null)
@@ -201,7 +261,59 @@ app.post('/api/auth/login', async (req, res) => {
     return res.status(401).json({ error: 'invalid_credentials' });
   const token = createSession(user);
   await audit(user.id, user.store_id, 'login', 'app_user', user.id, null);
-  res.json({ token, user: { id: user.id, name: user.name, role: user.role } });
+  res.json({
+    token,
+    user: { id: user.id, name: user.name, role: user.role, store_id: user.store_id },
+  });
+});
+
+// §v0.8 — shop signup (onboarding). Creates a new tenant store (with a unique
+// shop code), an owner app_user with a scrypt-hashed PIN, and seeds the default
+// service catalog into the new store. Audits 'shop_signup' scoped to the new
+// store. Public — anyone can create a shop.
+app.post('/api/auth/signup', async (req, res) => {
+  const { shop_name, owner_name, owner_pin } = req.body || {};
+  const shopName = typeof shop_name === 'string' ? shop_name.trim() : '';
+  const ownerName = typeof owner_name === 'string' ? owner_name.trim() : '';
+  const pinStr = owner_pin == null ? '' : String(owner_pin).trim();
+  if (!shopName || !ownerName || !/^\d{4,6}$/.test(pinStr))
+    return res.status(400).json({
+      error: 'shop_name, owner_name and a 4-6 digit owner_pin are required',
+    });
+
+  // Create the store with a unique shop code (retry on rare code collision).
+  let store = null;
+  for (let attempt = 0; attempt < 5 && !store; attempt++) {
+    const code = randomShopCode();
+    try {
+      store = (await q(
+        'INSERT INTO store (name, code) VALUES ($1,$2) RETURNING id, code, name',
+        [shopName, code])).rows[0];
+    } catch (e) {
+      if (e.code === '23505') continue; // unique_violation on store_code_uniq
+      throw e;
+    }
+  }
+  if (!store)
+    return res.status(500).json({ error: 'could not allocate a unique shop code' });
+
+  // Owner user for the new store (scrypt-hashed PIN).
+  const owner = (await q(
+    `INSERT INTO app_user (store_id, name, role, pin_hash)
+     VALUES ($1,$2,'owner',$3) RETURNING id`,
+    [store.id, ownerName, hashPin(pinStr)])).rows[0];
+
+  // Seed the default service catalog into the new store (usable immediately).
+  for (const [name, category, base_price, duration_min] of DEFAULT_SERVICES) {
+    await q(
+      `INSERT INTO service (store_id, name, category, base_price, duration_min)
+       VALUES ($1,$2,$3,$4,$5)`,
+      [store.id, name, category, base_price, duration_min]);
+  }
+
+  await audit(owner.id, store.id, 'shop_signup', 'store', store.id,
+    { shop_name: store.name, code: store.code, owner_name: ownerName });
+  res.json({ ok: true, store: { id: store.id, code: store.code, name: store.name } });
 });
 
 // ---- AUTH GATE: everything below /api/* requires a valid session ----
@@ -214,10 +326,11 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 // ---- OWNER-ONLY: user management ----
-app.get('/api/users', requireOwner, async (_req, res) => {
+app.get('/api/users', requireOwner, async (req, res) => {
   const rows = (await q(
     `SELECT id, name, role, active, created_at FROM app_user
-      ORDER BY created_at, id`)).rows;
+      WHERE store_id=$1
+      ORDER BY created_at, id`, [req.user.storeId])).rows;
   res.json(rows);
 });
 
@@ -238,7 +351,9 @@ app.post('/api/users', requireOwner, async (req, res) => {
 });
 
 app.put('/api/users/:id', requireOwner, async (req, res) => {
-  const existing = (await q('SELECT * FROM app_user WHERE id=$1', [req.params.id])).rows[0];
+  const existing = (await q(
+    'SELECT * FROM app_user WHERE id=$1 AND store_id=$2',
+    [req.params.id, req.user.storeId])).rows[0];
   if (!existing) return res.status(404).json({ error: 'user not found' });
   const { name, role, pin, active } = req.body || {};
   if (role !== undefined && !['owner', 'staff'].includes(role))
@@ -251,9 +366,10 @@ app.put('/api/users/:id', requireOwner, async (req, res) => {
   };
   const u = (await q(
     `UPDATE app_user SET name=$2, role=$3, active=$4, pin_hash=$5
-      WHERE id=$1
+      WHERE id=$1 AND store_id=$6
       RETURNING id, name, role, active, created_at`,
-    [req.params.id, next.name, next.role, next.active, next.pin_hash])).rows[0];
+    [req.params.id, next.name, next.role, next.active, next.pin_hash,
+     req.user.storeId])).rows[0];
   // Deactivation is a distinct, security-relevant action.
   const deactivated = existing.active === true && next.active === false;
   await audit(
@@ -267,9 +383,10 @@ app.put('/api/users/:id', requireOwner, async (req, res) => {
 // ---- OWNER-ONLY: audit log ----
 app.get('/api/audit', requireOwner, async (req, res) => {
   const action = (req.query.action || '').trim();
-  const params = [];
-  let where = '';
-  if (action) { where = 'WHERE a.action = $1'; params.push(action); }
+  // §v0.8 — scope to this store. store_id is always $1.
+  const params = [req.user.storeId];
+  let where = 'WHERE a.store_id = $1';
+  if (action) { where += ' AND a.action = $2'; params.push(action); }
   const rows = (await q(
     `SELECT a.id, a.actor_user_id, u.name AS actor_name, a.action,
             a.entity, a.entity_id, a.detail, a.created_at
@@ -281,15 +398,21 @@ app.get('/api/audit', requireOwner, async (req, res) => {
   res.json(rows);
 });
 
-app.get('/api/summary', async (_req, res) => {
+app.get('/api/summary', async (req, res) => {
+  const storeId = req.user.storeId;
+  // §v0.8 — payment has no store_id of its own here; scope via its parent ticket.
   const sales = (await q(
-    `SELECT COALESCE(SUM(amount),0)::float AS revenue, COUNT(*)::int AS txns
-       FROM payment
-      WHERE status='success' AND created_at::date = now()::date`)).rows[0];
-  const members = (await q('SELECT COUNT(*)::int n FROM member')).rows[0].n;
+    `SELECT COALESCE(SUM(p.amount),0)::float AS revenue, COUNT(*)::int AS txns
+       FROM payment p JOIN ticket t ON t.id = p.ticket_id
+      WHERE p.status='success' AND p.created_at::date = now()::date
+        AND t.store_id=$1`, [storeId])).rows[0];
+  const members = (await q(
+    'SELECT COUNT(*)::int n FROM member WHERE store_id=$1', [storeId])).rows[0].n;
   const openTickets = (await q(
-    "SELECT COUNT(*)::int n FROM ticket WHERE status IN ('open','in_progress','done')")).rows[0].n;
-  const services = (await q('SELECT COUNT(*)::int n FROM service WHERE active')).rows[0].n;
+    "SELECT COUNT(*)::int n FROM ticket WHERE status IN ('open','in_progress','done') AND store_id=$1",
+    [storeId])).rows[0].n;
+  const services = (await q(
+    'SELECT COUNT(*)::int n FROM service WHERE active AND store_id=$1', [storeId])).rows[0].n;
   res.json({ revenue: sales.revenue, txns: sales.txns, members, openTickets, services });
 });
 
@@ -298,10 +421,12 @@ app.get('/api/summary', async (_req, res) => {
 // table). Each service includes `description` + an `options` array.
 app.get('/api/services', async (req, res) => {
   const all = req.query.all === '1' || req.query.all === 'true';
+  // §v0.8 — scope catalog to this store. Options inherit scope via service ids.
   const services = (await q(
     all
-      ? 'SELECT * FROM service ORDER BY category, name'
-      : 'SELECT * FROM service WHERE active ORDER BY category, name')).rows;
+      ? 'SELECT * FROM service WHERE store_id=$1 ORDER BY category, name'
+      : 'SELECT * FROM service WHERE store_id=$1 AND active ORDER BY category, name',
+    [req.user.storeId])).rows;
   if (services.length === 0) return res.json([]);
   const ids = services.map(s => s.id);
   // Active-only picker exposes a slim option shape; ?all exposes full rows.
@@ -318,7 +443,9 @@ app.get('/api/services', async (req, res) => {
 
 // §v0.7 — one service (incl description) + ALL its options (active+inactive).
 app.get('/api/services/:id', async (req, res) => {
-  const s = (await q('SELECT * FROM service WHERE id=$1', [req.params.id])).rows[0];
+  const s = (await q(
+    'SELECT * FROM service WHERE id=$1 AND store_id=$2',
+    [req.params.id, req.user.storeId])).rows[0];
   if (!s) return res.status(404).json({ error: 'service not found' });
   const options = (await q(
     'SELECT * FROM service_option WHERE service_id=$1 ORDER BY id', [req.params.id])).rows;
@@ -346,7 +473,9 @@ app.post('/api/services', requireOwner, async (req, res) => {
 // also cover category / duration_min / description. Audits 'service_price_change'
 // when base_price changes, else 'service_update'.
 app.put('/api/services/:id', requireOwner, async (req, res) => {
-  const existing = (await q('SELECT * FROM service WHERE id=$1', [req.params.id])).rows[0];
+  const existing = (await q(
+    'SELECT * FROM service WHERE id=$1 AND store_id=$2',
+    [req.params.id, req.user.storeId])).rows[0];
   if (!existing) return res.status(404).json({ error: 'service not found' });
   const { name, category, base_price, duration_min, description, active } = req.body || {};
   const next = {
@@ -360,9 +489,9 @@ app.put('/api/services/:id', requireOwner, async (req, res) => {
   const s = (await q(
     `UPDATE service SET name=$2, category=$3, base_price=$4,
         duration_min=$5, description=$6, active=$7
-      WHERE id=$1 RETURNING *`,
+      WHERE id=$1 AND store_id=$8 RETURNING *`,
     [req.params.id, next.name, next.category, next.base_price,
-     next.duration_min, next.description, next.active])).rows[0];
+     next.duration_min, next.description, next.active, req.user.storeId])).rows[0];
   if (base_price !== undefined && Number(base_price) !== Number(existing.base_price)) {
     await audit(req.user.id, req.user.storeId, 'service_price_change', 'service', s.id,
       { old_price: Number(existing.base_price), new_price: Number(s.base_price) });
@@ -377,13 +506,16 @@ app.put('/api/services/:id', requireOwner, async (req, res) => {
 // SOFT delete (active=false) to preserve bill history. Else → HARD delete the
 // row and its options. Owner only. Audits 'service_delete' with {mode}.
 app.delete('/api/services/:id', requireOwner, async (req, res) => {
-  const existing = (await q('SELECT * FROM service WHERE id=$1', [req.params.id])).rows[0];
+  const existing = (await q(
+    'SELECT * FROM service WHERE id=$1 AND store_id=$2',
+    [req.params.id, req.user.storeId])).rows[0];
   if (!existing) return res.status(404).json({ error: 'service not found' });
   const used = (await q(
     'SELECT 1 FROM ticket_item WHERE service_id=$1 LIMIT 1', [req.params.id])).rows.length > 0;
   if (used) {
     const s = (await q(
-      'UPDATE service SET active=false WHERE id=$1 RETURNING *', [req.params.id])).rows[0];
+      'UPDATE service SET active=false WHERE id=$1 AND store_id=$2 RETURNING *',
+      [req.params.id, req.user.storeId])).rows[0];
     await audit(req.user.id, req.user.storeId, 'service_delete', 'service', s.id,
       { mode: 'soft' });
     return res.json({ mode: 'soft', service: s });
@@ -398,15 +530,18 @@ app.delete('/api/services/:id', requireOwner, async (req, res) => {
 // §v0.7 — add an option (add-on) to a service. Owner only. store_id inherited
 // from the service. Audits 'service_option_add' (best-effort).
 app.post('/api/services/:id/options', requireOwner, async (req, res) => {
-  const svc = (await q('SELECT * FROM service WHERE id=$1', [req.params.id])).rows[0];
+  const svc = (await q(
+    'SELECT * FROM service WHERE id=$1 AND store_id=$2',
+    [req.params.id, req.user.storeId])).rows[0];
   if (!svc) return res.status(404).json({ error: 'service not found' });
   const { name, price_delta, minute_delta } = req.body || {};
   if (!name) return res.status(400).json({ error: 'name required' });
+  // §v0.8 — option inherits the (verified) parent service's store_id.
   const o = (await q(
     `INSERT INTO service_option (store_id, service_id, name, price_delta, minute_delta)
      VALUES ($1,$2,$3, COALESCE($4,0), COALESCE($5,0))
      RETURNING *`,
-    [svc.store_id ?? null, svc.id, name,
+    [svc.store_id ?? req.user.storeId, svc.id, name,
      price_delta == null ? null : price_delta,
      minute_delta == null ? null : minute_delta])).rows[0];
   await audit(req.user.id, req.user.storeId, 'service_option_add', 'service_option', o.id,
@@ -416,6 +551,11 @@ app.post('/api/services/:id/options', requireOwner, async (req, res) => {
 
 // §v0.7 — partial update of an option. Owner only.
 app.put('/api/services/:id/options/:oid', requireOwner, async (req, res) => {
+  // §v0.8 — confirm the parent service is in this store before touching options.
+  const svc = (await q(
+    'SELECT id FROM service WHERE id=$1 AND store_id=$2',
+    [req.params.id, req.user.storeId])).rows[0];
+  if (!svc) return res.status(404).json({ error: 'service not found' });
   const existing = (await q(
     'SELECT * FROM service_option WHERE id=$1 AND service_id=$2',
     [req.params.oid, req.params.id])).rows[0];
@@ -437,6 +577,11 @@ app.put('/api/services/:id/options/:oid', requireOwner, async (req, res) => {
 
 // §v0.7 — hard delete an option (config only, no ticket history). Owner only.
 app.delete('/api/services/:id/options/:oid', requireOwner, async (req, res) => {
+  // §v0.8 — confirm the parent service is in this store before deleting options.
+  const svc = (await q(
+    'SELECT id FROM service WHERE id=$1 AND store_id=$2',
+    [req.params.id, req.user.storeId])).rows[0];
+  if (!svc) return res.status(404).json({ error: 'service not found' });
   await q('DELETE FROM service_option WHERE id=$1 AND service_id=$2',
     [req.params.oid, req.params.id]);
   res.json({ ok: true });
@@ -445,27 +590,33 @@ app.delete('/api/services/:id/options/:oid', requireOwner, async (req, res) => {
 app.get('/api/members', async (req, res) => {
   const term = (req.query.q || '').trim();
   if (term) {
+    // §v0.8 — store-scoped search.
     const rows = (await q(
       `SELECT * FROM member
-        WHERE name ILIKE $1 OR phone ILIKE $1
-        ORDER BY joined_at DESC`, [`%${term}%`])).rows;
+        WHERE store_id=$2 AND (name ILIKE $1 OR phone ILIKE $1)
+        ORDER BY joined_at DESC`, [`%${term}%`, req.user.storeId])).rows;
     return res.json(rows);
   }
-  res.json((await q('SELECT * FROM member ORDER BY joined_at DESC')).rows);
+  res.json((await q(
+    'SELECT * FROM member WHERE store_id=$1 ORDER BY joined_at DESC',
+    [req.user.storeId])).rows);
 });
 
 app.post('/api/members', async (req, res) => {
   const { name, phone, line_user_id, notes } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
+  // §v0.8 — store_id derived from session (was hardcoded 1).
   const m = (await q(
     `INSERT INTO member (store_id, name, phone, line_user_id, notes)
-     VALUES (1,$1,$2,$3,$4) RETURNING *`,
-    [name, phone || null, line_user_id || null, notes || null])).rows[0];
+     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+    [req.user.storeId, name, phone || null, line_user_id || null, notes || null])).rows[0];
   res.json(m);
 });
 
 app.put('/api/members/:id', async (req, res) => {
-  const existing = (await q('SELECT * FROM member WHERE id=$1', [req.params.id])).rows[0];
+  const existing = (await q(
+    'SELECT * FROM member WHERE id=$1 AND store_id=$2',
+    [req.params.id, req.user.storeId])).rows[0];
   if (!existing) return res.status(400).json({ error: 'member not found' });
   const { name, phone, line_user_id, notes } = req.body;
   const next = {
@@ -476,73 +627,94 @@ app.put('/api/members/:id', async (req, res) => {
   };
   const m = (await q(
     `UPDATE member SET name=$2, phone=$3, line_user_id=$4, notes=$5
-      WHERE id=$1 RETURNING *`,
-    [req.params.id, next.name, next.phone, next.line_user_id, next.notes])).rows[0];
+      WHERE id=$1 AND store_id=$6 RETURNING *`,
+    [req.params.id, next.name, next.phone, next.line_user_id, next.notes,
+     req.user.storeId])).rows[0];
   res.json(m);
 });
 
 app.get('/api/members/:id', async (req, res) => {
-  const m = (await q('SELECT * FROM member WHERE id=$1', [req.params.id])).rows[0];
+  const m = (await q(
+    'SELECT * FROM member WHERE id=$1 AND store_id=$2',
+    [req.params.id, req.user.storeId])).rows[0];
   if (!m) return res.status(404).json({ error: 'not found' });
+  // §v0.8 — member is store-verified above; its tickets are scoped to the same
+  // store too (defense-in-depth).
   const history = (await q(
     `SELECT t.id, t.status, t.created_at, t.closed_at,
             COALESCE(SUM(p.amount) FILTER (WHERE p.status='success'),0)::float AS spent
        FROM ticket t LEFT JOIN payment p ON p.ticket_id = t.id
-      WHERE t.member_id=$1
-      GROUP BY t.id ORDER BY t.created_at DESC`, [req.params.id])).rows;
+      WHERE t.member_id=$1 AND t.store_id=$2
+      GROUP BY t.id ORDER BY t.created_at DESC`,
+    [req.params.id, req.user.storeId])).rows;
   res.json({ ...m, history });
 });
 
-app.get('/api/tickets', async (_req, res) => {
+app.get('/api/tickets', async (req, res) => {
+  // §v0.8 — store-scoped list.
   const rows = (await q(
     `SELECT t.*, m.name AS member_name,
             COALESCE(SUM(ti.quoted_price*ti.qty),0)::float AS total
        FROM ticket t
        LEFT JOIN member m ON m.id = t.member_id
        LEFT JOIN ticket_item ti ON ti.ticket_id = t.id
-      WHERE t.status IN ('open','in_progress','done')
-      GROUP BY t.id, m.name ORDER BY t.created_at DESC`)).rows;
+      WHERE t.status IN ('open','in_progress','done') AND t.store_id=$1
+      GROUP BY t.id, m.name ORDER BY t.created_at DESC`, [req.user.storeId])).rows;
   res.json(rows);
 });
 
 app.post('/api/tickets', async (req, res) => {
   const { member_id, staff_name, assigned_user_id } = req.body;
+  // §v0.8 — store_id derived from session (was hardcoded 1).
   const t = (await q(
     `INSERT INTO ticket (store_id, member_id, staff_name, assigned_user_id, status)
-     VALUES (1,$1,$2,$3,'open') RETURNING *`,
-    [member_id || null, staff_name || 'Front desk', assigned_user_id || null])).rows[0];
-  res.json(await ticketDetail(t.id));
+     VALUES ($1,$2,$3,$4,'open') RETURNING *`,
+    [req.user.storeId, member_id || null, staff_name || 'Front desk',
+     assigned_user_id || null])).rows[0];
+  res.json(await ticketDetail(t.id, req.user.storeId));
 });
 
 app.get('/api/tickets/:id', async (req, res) => {
-  const d = await ticketDetail(req.params.id);
+  const d = await ticketDetail(req.params.id, req.user.storeId);
   if (!d) return res.status(404).json({ error: 'not found' });
   res.json(d);
 });
 
 app.post('/api/tickets/:id/items', async (req, res) => {
+  // §v0.8 — verify the ticket is in this store before adding items.
+  const ticket = (await q(
+    'SELECT id FROM ticket WHERE id=$1 AND store_id=$2',
+    [req.params.id, req.user.storeId])).rows[0];
+  if (!ticket) return res.status(404).json({ error: 'not found' });
   const { service_id, qty, quoted_price, note, minutes } = req.body;
   if (!service_id || quoted_price == null)
     return res.status(400).json({ error: 'service_id and quoted_price required' });
+  // §v0.8 — the chosen service must belong to this store too (no cross-tenant
+  // service references). Doubles as the duration_min lookup.
+  const svc = (await q(
+    'SELECT duration_min FROM service WHERE id=$1 AND store_id=$2',
+    [service_id, req.user.storeId])).rows[0];
+  if (!svc) return res.status(404).json({ error: 'service not found' });
   // §v0.6 — per-item minutes defaults to the service's duration_min when omitted,
   // so est_minutes is always meaningful even if the client never sends minutes.
-  let mins = minutes;
-  if (mins == null) {
-    const svc = (await q('SELECT duration_min FROM service WHERE id=$1', [service_id])).rows[0];
-    mins = svc ? svc.duration_min : null;
-  }
+  const mins = minutes == null ? svc.duration_min : minutes;
   await q(
     `INSERT INTO ticket_item (ticket_id, service_id, qty, quoted_price, note, minutes)
      VALUES ($1,$2,$3,$4,$5,$6)`,
     [req.params.id, service_id, qty || 1, quoted_price, note || null, mins]);
   await q("UPDATE ticket SET status='in_progress' WHERE id=$1 AND status='open'", [req.params.id]);
   await recomputeEstMinutes(req.params.id);
-  res.json(await ticketDetail(req.params.id));
+  res.json(await ticketDetail(req.params.id, req.user.storeId));
 });
 
 // §v0.6 — partial update of a ticket item (minutes / quoted_price / qty), then
 // recompute the ticket's est_minutes. Only the provided fields change.
 app.put('/api/tickets/:id/items/:itemId', async (req, res) => {
+  // §v0.8 — verify the ticket is in this store before touching its items.
+  const ticket = (await q(
+    'SELECT id FROM ticket WHERE id=$1 AND store_id=$2',
+    [req.params.id, req.user.storeId])).rows[0];
+  if (!ticket) return res.status(404).json({ error: 'not found' });
   const existing = (await q(
     'SELECT * FROM ticket_item WHERE id=$1 AND ticket_id=$2',
     [req.params.itemId, req.params.id])).rows[0];
@@ -558,19 +730,25 @@ app.put('/api/tickets/:id/items/:itemId', async (req, res) => {
       WHERE id=$1 AND ticket_id=$2`,
     [req.params.itemId, req.params.id, next.minutes, next.quoted_price, next.qty]);
   await recomputeEstMinutes(req.params.id);
-  res.json(await ticketDetail(req.params.id));
+  res.json(await ticketDetail(req.params.id, req.user.storeId));
 });
 
 app.delete('/api/tickets/:id/items/:itemId', async (req, res) => {
+  // §v0.8 — verify the ticket is in this store before deleting its items.
+  const ticket = (await q(
+    'SELECT id FROM ticket WHERE id=$1 AND store_id=$2',
+    [req.params.id, req.user.storeId])).rows[0];
+  if (!ticket) return res.status(404).json({ error: 'not found' });
   await q('DELETE FROM ticket_item WHERE id=$1 AND ticket_id=$2',
     [req.params.itemId, req.params.id]);
   await recomputeEstMinutes(req.params.id);
-  res.json(await ticketDetail(req.params.id));
+  res.json(await ticketDetail(req.params.id, req.user.storeId));
 });
 
 // LINE confirm (mocked)
 app.post('/api/tickets/:id/quote/send', async (req, res) => {
-  const d = await ticketDetail(req.params.id);
+  // §v0.8 — ticketDetail is store-scoped; null → 404 (incl cross-tenant).
+  const d = await ticketDetail(req.params.id, req.user.storeId);
   if (!d) return res.status(404).json({ error: 'not found' });
   const { lineMsgId: msgId } = await lineAdapter.pushQuote({
     lineUserId: d.member?.line_user_id || null,
@@ -581,19 +759,30 @@ app.post('/api/tickets/:id/quote/send', async (req, res) => {
     `INSERT INTO quote_confirm (ticket_id, channel, quoted_total, sent_at, line_msg_id)
      VALUES ($1,'line',$2, now(), $3) RETURNING *`,
     [req.params.id, d.total, msgId])).rows[0];
-  res.json({ ...await ticketDetail(req.params.id), justSent: qc });
+  res.json({ ...await ticketDetail(req.params.id, req.user.storeId), justSent: qc });
 });
 
 app.post('/api/tickets/:id/quote/confirm', async (req, res) => {
+  // §v0.8 — verify the ticket is in this store before confirming its quote.
+  const ticket = (await q(
+    'SELECT id FROM ticket WHERE id=$1 AND store_id=$2',
+    [req.params.id, req.user.storeId])).rows[0];
+  if (!ticket) return res.status(404).json({ error: 'not found' });
   await q(
     `UPDATE quote_confirm SET confirmed_at = now()
       WHERE ticket_id=$1 AND id = (SELECT id FROM quote_confirm WHERE ticket_id=$1 ORDER BY id DESC LIMIT 1)`,
     [req.params.id]);
-  res.json(await ticketDetail(req.params.id));
+  res.json(await ticketDetail(req.params.id, req.user.storeId));
 });
 
 // Payment — cash / beam_edc / unpaid. EDC simulated (persist-before-send).
 app.post('/api/tickets/:id/payments', async (req, res) => {
+  // §v0.8 — store scope only: confirm the ticket belongs to this store before
+  // taking payment. The payment/idempotency logic below is UNCHANGED (SACRED).
+  const ticket = (await q(
+    'SELECT id FROM ticket WHERE id=$1 AND store_id=$2',
+    [req.params.id, req.user.storeId])).rows[0];
+  if (!ticket) return res.status(404).json({ error: 'not found' });
   const { method, amount, simulate } = req.body;
   if (!['cash', 'beam_edc', 'unpaid'].includes(method))
     return res.status(400).json({ error: 'bad method' });
@@ -627,7 +816,7 @@ app.post('/api/tickets/:id/payments', async (req, res) => {
       `INSERT INTO payment (ticket_id, payment_seq, method, amount, status)
        VALUES ($1,$2,'unpaid',$3,'pending')`, [req.params.id, seq, amount]);
   }
-  res.json(await ticketDetail(req.params.id));
+  res.json(await ticketDetail(req.params.id, req.user.storeId));
 });
 
 // §4 INVARIANT 2 — retry an existing beam_edc payment reusing its stored key.
@@ -635,9 +824,12 @@ app.post('/api/tickets/:id/payments', async (req, res) => {
 // mark failed, return 409 needs_reconcile (manual). Pure logic — mock Beam.
 app.post('/api/tickets/:id/payments/:pid/retry', async (req, res) => {
   const { simulate } = req.body || {};
+  // §v0.8 — scope the payment via its parent ticket's store. Cross-tenant pid →
+  // not found (404). SACRED retry/idempotency logic below is UNCHANGED.
   const p = (await q(
-    'SELECT * FROM payment WHERE id=$1 AND ticket_id=$2',
-    [req.params.pid, req.params.id])).rows[0];
+    `SELECT p.* FROM payment p JOIN ticket t ON t.id = p.ticket_id
+      WHERE p.id=$1 AND p.ticket_id=$2 AND t.store_id=$3`,
+    [req.params.pid, req.params.id, req.user.storeId])).rows[0];
   if (!p) return res.status(404).json({ error: 'payment not found' });
   if (p.method !== 'beam_edc')
     return res.status(400).json({ error: 'not a beam_edc payment' });
@@ -663,69 +855,101 @@ app.post('/api/tickets/:id/payments/:pid/retry', async (req, res) => {
   await q(
     `UPDATE payment SET status=$2, beam_charge_id=$3 WHERE id=$1`,
     [p.id, result.status, result.beamChargeId || null]);
-  res.json(await ticketDetail(req.params.id));
+  res.json(await ticketDetail(req.params.id, req.user.storeId));
 });
 
 // Void a payment (§3 'voided' enum). Safe on pending/success/failed.
 // OWNER ONLY (sensitive). Audits 'payment_void'.
 app.post('/api/tickets/:id/payments/:pid/void', requireOwner, async (req, res) => {
+  // §v0.8 — verify the ticket (and thus the payment) is in this store.
+  const ticket = (await q(
+    'SELECT id FROM ticket WHERE id=$1 AND store_id=$2',
+    [req.params.id, req.user.storeId])).rows[0];
+  if (!ticket) return res.status(404).json({ error: 'not found' });
   await q(
     `UPDATE payment SET status='voided' WHERE id=$1 AND ticket_id=$2`,
     [req.params.pid, req.params.id]);
   await audit(req.user.id, req.user.storeId, 'payment_void', 'payment', req.params.pid,
     { ticket_id: req.params.id });
-  res.json(await ticketDetail(req.params.id));
+  res.json(await ticketDetail(req.params.id, req.user.storeId));
 });
 
 // §v0.6 — assign (or unassign) a technician to a ticket. Pass assigned_user_id
 // null to unassign. Does not change status or start the clock.
 app.put('/api/tickets/:id/assign', async (req, res) => {
-  const t = (await q('SELECT id FROM ticket WHERE id=$1', [req.params.id])).rows[0];
+  const t = (await q(
+    'SELECT id FROM ticket WHERE id=$1 AND store_id=$2',
+    [req.params.id, req.user.storeId])).rows[0];
   if (!t) return res.status(404).json({ error: 'not found' });
   const { assigned_user_id } = req.body || {};
-  await q('UPDATE ticket SET assigned_user_id=$2 WHERE id=$1',
-    [req.params.id, assigned_user_id || null]);
-  res.json(await ticketDetail(req.params.id));
+  // §v0.8 — the technician must belong to this store too (no cross-tenant assign).
+  if (assigned_user_id) {
+    const tech = (await q(
+      'SELECT id FROM app_user WHERE id=$1 AND store_id=$2',
+      [assigned_user_id, req.user.storeId])).rows[0];
+    if (!tech) return res.status(404).json({ error: 'user not found' });
+  }
+  await q('UPDATE ticket SET assigned_user_id=$2 WHERE id=$1 AND store_id=$3',
+    [req.params.id, assigned_user_id || null, req.user.storeId]);
+  res.json(await ticketDetail(req.params.id, req.user.storeId));
 });
 
 // §v0.6 — start work: set status=in_progress, started_at=now(), recompute
 // est_minutes, and (optionally) assign a technician. From now the assigned tech
 // is busy/locked until started_at + est_minutes (derived busy_until).
 app.post('/api/tickets/:id/start', async (req, res) => {
-  const t = (await q('SELECT * FROM ticket WHERE id=$1', [req.params.id])).rows[0];
+  const t = (await q(
+    'SELECT * FROM ticket WHERE id=$1 AND store_id=$2',
+    [req.params.id, req.user.storeId])).rows[0];
   if (!t) return res.status(404).json({ error: 'not found' });
   const { assigned_user_id } = req.body || {};
   const tech = assigned_user_id !== undefined && assigned_user_id !== null
     ? assigned_user_id
     : t.assigned_user_id;
+  // §v0.8 — if a technician is being assigned, they must be in this store.
+  if (tech) {
+    const techRow = (await q(
+      'SELECT id FROM app_user WHERE id=$1 AND store_id=$2',
+      [tech, req.user.storeId])).rows[0];
+    if (!techRow) return res.status(404).json({ error: 'user not found' });
+  }
   await recomputeEstMinutes(req.params.id);
   await q(
     `UPDATE ticket
         SET status='in_progress', started_at=now(), assigned_user_id=$2
-      WHERE id=$1`,
-    [req.params.id, tech || null]);
-  res.json(await ticketDetail(req.params.id));
+      WHERE id=$1 AND store_id=$3`,
+    [req.params.id, tech || null, req.user.storeId]);
+  res.json(await ticketDetail(req.params.id, req.user.storeId));
 });
 
 app.post('/api/tickets/:id/close', async (req, res) => {
-  await q("UPDATE ticket SET status='closed', closed_at=now() WHERE id=$1", [req.params.id]);
+  // §v0.8 — scope close to this store. No cross-tenant ticket close.
+  const t = (await q(
+    'SELECT id FROM ticket WHERE id=$1 AND store_id=$2',
+    [req.params.id, req.user.storeId])).rows[0];
+  if (!t) return res.status(404).json({ error: 'not found' });
+  await q("UPDATE ticket SET status='closed', closed_at=now() WHERE id=$1 AND store_id=$2",
+    [req.params.id, req.user.storeId]);
   await audit(req.user.id, req.user.storeId, 'ticket_close', 'ticket', req.params.id, null);
-  res.json(await ticketDetail(req.params.id));
+  res.json(await ticketDetail(req.params.id, req.user.storeId));
 });
 
 // §v0.6 — Queue board. Computed live from app_user + ticket. A technician is
 // "busy" iff there is an in_progress ticket assigned to them with started_at set
 // whose busy_until (started_at + est_minutes*60000) is still in the future.
-app.get('/api/queue', async (_req, res) => {
+app.get('/api/queue', async (req, res) => {
   const now = Date.now();
+  const storeId = req.user.storeId;
+  // §v0.8 — store-scoped technicians + tickets.
   const techs = (await q(
-    'SELECT id, name, role FROM app_user WHERE active ORDER BY role, name')).rows;
+    'SELECT id, name, role FROM app_user WHERE active AND store_id=$1 ORDER BY role, name',
+    [storeId])).rows;
   // Live open/in_progress tickets with member name for labels.
   const tickets = (await q(
     `SELECT t.*, m.name AS member_name
        FROM ticket t LEFT JOIN member m ON m.id = t.member_id
-      WHERE t.status IN ('open','in_progress')
-      ORDER BY t.created_at`)).rows;
+      WHERE t.status IN ('open','in_progress') AND t.store_id=$1
+      ORDER BY t.created_at`, [storeId])).rows;
 
   const labelOf = (t) =>
     `บิล #${t.id} · ${t.member_name || 'ลูกค้าทั่วไป'}`;
@@ -778,7 +1002,8 @@ app.get('/api/queue', async (_req, res) => {
     waiting.map(w => w.assigned_user_id).filter(uid => uid != null && !nameById.has(uid)))];
   if (missing.length) {
     const extra = (await q(
-      'SELECT id, name FROM app_user WHERE id = ANY($1)', [missing])).rows;
+      'SELECT id, name FROM app_user WHERE id = ANY($1) AND store_id=$2',
+      [missing, storeId])).rows;
     for (const u of extra) nameById.set(u.id, u.name);
   }
   for (const w of waiting) {

@@ -234,6 +234,13 @@ input:focus, select:focus { outline: 2px solid var(--rose-soft); border-color: v
   font-size: 13px; font-weight: 600; color: var(--warn);
   background: #f5ecdc; border: 1px solid #e7d6b8; }
 
+/* inline success note (e.g. new shop created) */
+.note-ok { padding: 12px 14px; border-radius: 12px;
+  font-size: 14px; font-weight: 600; color: var(--ok);
+  background: #e6f0ea; border: 1px solid #c6e0d2; }
+.note-ok b { color: var(--rose-dark); font-size: 18px; letter-spacing: 1px; }
+.shop-code-banner { margin-bottom: 14px; }
+
 .empty { text-align: center; color: var(--muted); padding: 40px 20px; }
 .empty .big { font-size: 40px; }
 .toast { position: fixed; bottom: 150px; left: 50%; transform: translateX(-50%);

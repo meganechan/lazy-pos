@@ -67,8 +67,18 @@ const j = async (url, opts = {}) => {
 
 export const api = {
   /* ── auth ── */
-  authUsers: () => j('/api/auth/users'),
+  // public shop picker
+  shops: () => j('/api/auth/shops'),
+  // users for ONE store only. Pass the chosen store's id at login.
+  // In-app callers (no arg) fall back to the logged-in user's store_id so the
+  // technician picker keeps working. No store id at all → [] (server returns empty).
+  authUsers: (storeId) => {
+    const sid = storeId != null && storeId !== '' ? storeId : (getUser() && getUser().store_id)
+    if (sid == null || sid === '') return Promise.resolve([])
+    return j('/api/auth/users?store_id=' + encodeURIComponent(sid))
+  },
   login: (userId, pin) => j('/api/auth/login', { method: 'POST', body: JSON.stringify({ userId, pin }) }),
+  signup: (body) => j('/api/auth/signup', { method: 'POST', body: JSON.stringify(body) }),
   logout: () => j('/api/auth/logout', { method: 'POST' }),
 
   /* ── user management (owner only) ── */

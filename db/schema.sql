@@ -6,6 +6,12 @@ CREATE TABLE IF NOT EXISTS store (
   name         TEXT NOT NULL
 );
 
+-- §v0.8 Multi-tenant SaaS — store = tenant. Each store gets a unique shop code
+-- used by the shop-scoped login picker. Idempotent (bootstrap runs every start).
+ALTER TABLE store ADD COLUMN IF NOT EXISTS code TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS store_code_uniq ON store(code);
+ALTER TABLE store ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();
+
 CREATE TABLE IF NOT EXISTS member (
   id           SERIAL PRIMARY KEY,
   store_id     INTEGER NOT NULL REFERENCES store(id),

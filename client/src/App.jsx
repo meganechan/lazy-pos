@@ -1562,16 +1562,106 @@ function RoleBadge({ role }) {
   return <span className={'badge rolebadge ' + cls}>{roleTH[role] || role}</span>
 }
 
+/* reusable PIN pad (dots + keypad). Used by login PIN step and signup form. */
+function PinPad({ pin, busy, err, onPress, onBack, onSubmit, minLen = 4, okLabel = '✓' }) {
+  return (
+    <>
+      <div className="pin-dots">
+        {[0, 1, 2, 3, 4, 5].map((i) => (
+          <span key={i} className={'pin-dot' + (i < pin.length ? ' filled' : '')} />
+        ))}
+      </div>
+
+      {err && <div className="pin-err">{err}</div>}
+
+      <div className="pinpad">
+        {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((d) => (
+          <button key={d} className="pinkey" disabled={busy} onClick={() => onPress(d)}>{d}</button>
+        ))}
+        <button className="pinkey ghost" disabled={busy || pin.length === 0} onClick={onBack}>⌫</button>
+        <button className="pinkey" disabled={busy} onClick={() => onPress('0')}>0</button>
+        <button className="pinkey ok" disabled={busy || pin.length < minLen} onClick={onSubmit}>{busy ? '…' : okLabel}</button>
+      </div>
+    </>
+  )
+}
+
+/*
+ * Multi-tenant login step machine:
+ *   step 'shop'   → pick a shop (list from shops()) or type a shop code → load that store's users
+ *   step 'user'   → pick a user of the chosen shop (scoped) → go to pin
+ *   step 'pin'    → PIN pad → login() → enter app
+ *   step 'signup' → new-shop form → signup() → show shop code → back to 'shop' (pre-selected)
+ */
 function Login({ onLoggedIn }) {
+  const [step, setStep] = useState('shop') // 'shop' | 'user' | 'pin' | 'signup'
+
+  // shop step
+  const [shops, setShops] = useState(null)
+  const [shop, setShop] = useState(null) // chosen {id,code,name}
+  const [code, setCode] = useState('') // typed shop code
+  const [shopErr, setShopErr] = useState('')
+  const [lookingUp, setLookingUp] = useState(false)
+
+  // user step
   const [users, setUsers] = useState(null)
   const [picked, setPicked] = useState(null) // selected user {id,name,role}
+
+  // pin step
   const [pin, setPin] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
 
+  // signup step
+  const [shopName, setShopName] = useState('')
+  const [ownerName, setOwnerName] = useState('')
+  const [ownerPin, setOwnerPin] = useState('')
+  const [signupBusy, setSignupBusy] = useState(false)
+  const [signupErr, setSignupErr] = useState('')
+  const [newCode, setNewCode] = useState('') // returned shop code banner
+
   useEffect(() => {
-    api.authUsers().then(setUsers).catch(() => setUsers([]))
+    api.shops().then(setShops).catch(() => setShops([]))
   }, [])
+
+  // choose a shop (from list or by code) → load its users, go to user step
+  const chooseShop = (s) => {
+    setShop(s)
+    setUsers(null)
+    setPicked(null)
+    setPin('')
+    setErr('')
+    setStep('user')
+    api.authUsers(s.id).then(setUsers).catch(() => setUsers([]))
+  }
+
+  const lookupByCode = () => {
+    const c = code.trim()
+    if (!c) { setShopErr('กรุณาใส่ Shop code'); return }
+    setShopErr('')
+    const found = (shops || []).find((s) => String(s.code).toLowerCase() === c.toLowerCase())
+    if (found) { chooseShop(found); return }
+    // not in the loaded list → refetch and retry once (covers a just-created shop)
+    setLookingUp(true)
+    api.shops()
+      .then((list) => {
+        setShops(list)
+        const f = (list || []).find((s) => String(s.code).toLowerCase() === c.toLowerCase())
+        setLookingUp(false)
+        if (f) chooseShop(f)
+        else setShopErr('ไม่พบร้านรหัสนี้')
+      })
+      .catch(() => { setLookingUp(false); setShopErr('ค้นหาร้านไม่สำเร็จ') })
+  }
+
+  const backToShop = () => {
+    setStep('shop')
+    setShop(null)
+    setUsers(null)
+    setPicked(null)
+    setPin('')
+    setErr('')
+  }
 
   const press = (d) => {
     setErr('')
@@ -1592,24 +1682,142 @@ function Login({ onLoggedIn }) {
       })
   }
 
+  // signup PIN pad handlers
+  const pinPress = (d) => { setSignupErr(''); setOwnerPin((p) => (p.length >= 6 ? p : p + d)) }
+  const pinBack = () => { setSignupErr(''); setOwnerPin((p) => p.slice(0, -1)) }
+
+  const doSignup = () => {
+    if (!shopName.trim()) { setSignupErr('กรุณากรอกชื่อร้าน'); return }
+    if (!ownerName.trim()) { setSignupErr('กรุณากรอกชื่อเจ้าของ'); return }
+    if (ownerPin.length < 4) { setSignupErr('PIN ต้องมี 4–6 หลัก'); return }
+    setSignupBusy(true)
+    setSignupErr('')
+    api.signup({ shop_name: shopName.trim(), owner_name: ownerName.trim(), owner_pin: ownerPin })
+      .then((res) => {
+        setSignupBusy(false)
+        const store = res.store || {}
+        setNewCode(store.code || '')
+        // pre-select the new shop and route back to the shop step so they can log in
+        setShops((prev) => {
+          const list = prev || []
+          return list.some((s) => s.id === store.id) ? list : [...list, store]
+        })
+        // reset signup inputs
+        setShopName('')
+        setOwnerName('')
+        setOwnerPin('')
+        setStep('shop')
+      })
+      .catch((e) => {
+        setSignupBusy(false)
+        setSignupErr('สมัครไม่สำเร็จ: ' + e.message)
+      })
+  }
+
   return (
     <div className="login">
       <div className="login-head">
         <div className="login-logo">💅</div>
         <h1>Lazy Nail POS</h1>
-        <div className="sub">เลือกผู้ใช้แล้วใส่ PIN เพื่อเข้าสู่ระบบ</div>
+        <div className="sub">
+          {step === 'shop' ? 'เลือกร้านเพื่อเข้าสู่ระบบ'
+            : step === 'signup' ? 'สมัครร้านใหม่'
+            : step === 'user' ? 'เลือกผู้ใช้ของร้าน'
+            : 'ใส่ PIN เพื่อเข้าสู่ระบบ'}
+        </div>
       </div>
 
-      {!picked ? (
+      {step === 'shop' ? (
         <div className="login-body">
+          {newCode && (
+            <div className="note-ok shop-code-banner">
+              ✅ สร้างร้านสำเร็จ — ร้านของคุณคือรหัส: <b>{newCode}</b>
+              <div className="meta" style={{ marginTop: 4 }}>เลือกร้านด้านล่างแล้วเข้าสู่ระบบด้วย PIN เจ้าของ</div>
+            </div>
+          )}
+
+          <div className="section-title">เลือกร้าน</div>
+          {!shops ? (
+            <Loading />
+          ) : shops.length === 0 ? (
+            <div className="empty"><div className="big">🏪</div>ยังไม่มีร้าน</div>
+          ) : (
+            shops.map((s) => (
+              <div className="li" key={s.id} onClick={() => chooseShop(s)}>
+                <div className="avatar">🏪</div>
+                <div className="grow">
+                  <div className="name">{s.name}</div>
+                  <div className="meta">รหัส: {s.code}</div>
+                </div>
+                <span className="chev">›</span>
+              </div>
+            ))
+          )}
+
+          <div className="section-title">หรือใส่ Shop code</div>
+          <input
+            value={code}
+            onChange={(e) => { setShopErr(''); setCode(e.target.value) }}
+            placeholder="เช่น ABCD"
+            onKeyDown={(e) => { if (e.key === 'Enter') lookupByCode() }}
+          />
+          {shopErr && <div className="pin-err">{shopErr}</div>}
+          <div className="btn-row">
+            <button className="btn" disabled={lookingUp} onClick={lookupByCode}>{lookingUp ? 'กำลังค้นหา…' : 'เข้าร้านด้วยรหัส'}</button>
+          </div>
+
+          <div className="spacer" />
+          <div className="btn-row">
+            <button className="btn ghost" onClick={() => { setSignupErr(''); setNewCode(''); setStep('signup') }}>➕ สมัครร้านใหม่</button>
+          </div>
+        </div>
+      ) : step === 'signup' ? (
+        <div className="login-body">
+          <div className="btn-row" style={{ marginTop: 0, marginBottom: 6 }}>
+            <button className="btn ghost" style={{ width: 'auto', padding: '8px 12px' }} onClick={() => { setSignupErr(''); setStep('shop') }}>‹ กลับ</button>
+          </div>
+          <div className="card">
+            <label>ชื่อร้าน *</label>
+            <input value={shopName} onChange={(e) => { setSignupErr(''); setShopName(e.target.value) }} placeholder="เช่น Lazy Nail สาขาทองหล่อ" />
+            <label>ชื่อเจ้าของ *</label>
+            <input value={ownerName} onChange={(e) => { setSignupErr(''); setOwnerName(e.target.value) }} placeholder="ชื่อเจ้าของร้าน" />
+            <label>PIN เจ้าของ (4–6 หลัก) *</label>
+            <PinPad
+              pin={ownerPin}
+              busy={signupBusy}
+              err={signupErr}
+              onPress={pinPress}
+              onBack={pinBack}
+              onSubmit={doSignup}
+              minLen={4}
+              okLabel="สมัคร"
+            />
+            <div className="btn-row">
+              <button className="btn" disabled={signupBusy} onClick={doSignup}>{signupBusy ? 'กำลังสมัคร…' : 'สมัครร้านใหม่'}</button>
+            </div>
+          </div>
+        </div>
+      ) : step === 'user' ? (
+        <div className="login-body">
+          <div className="btn-row" style={{ marginTop: 0, marginBottom: 6 }}>
+            <button className="btn ghost" style={{ width: 'auto', padding: '8px 12px' }} onClick={backToShop}>‹ เปลี่ยนร้าน</button>
+          </div>
+          <div className="li" style={{ marginBottom: 6 }}>
+            <div className="avatar">🏪</div>
+            <div className="grow">
+              <div className="name">{shop ? shop.name : ''}</div>
+              <div className="meta">รหัส: {shop ? shop.code : ''}</div>
+            </div>
+          </div>
+
           <div className="section-title">เลือกผู้ใช้</div>
           {!users ? (
             <Loading />
           ) : users.length === 0 ? (
-            <div className="empty"><div className="big">🔒</div>ยังไม่มีผู้ใช้</div>
+            <div className="empty"><div className="big">🔒</div>ยังไม่มีผู้ใช้ในร้านนี้</div>
           ) : (
             users.map((u) => (
-              <div className="li" key={u.id} onClick={() => { setPicked(u); setPin(''); setErr('') }}>
+              <div className="li" key={u.id} onClick={() => { setPicked(u); setPin(''); setErr(''); setStep('pin') }}>
                 <div className="avatar">{(u.name || '?').charAt(0).toUpperCase()}</div>
                 <div className="grow">
                   <div className="name">{u.name}</div>
@@ -1623,30 +1831,24 @@ function Login({ onLoggedIn }) {
       ) : (
         <div className="login-body">
           <div className="li" style={{ marginBottom: 14 }}>
-            <div className="avatar">{(picked.name || '?').charAt(0).toUpperCase()}</div>
+            <div className="avatar">{(picked && picked.name || '?').charAt(0).toUpperCase()}</div>
             <div className="grow">
-              <div className="name">{picked.name}</div>
-              <div className="meta"><RoleBadge role={picked.role} /></div>
+              <div className="name">{picked ? picked.name : ''}</div>
+              <div className="meta">{picked ? <RoleBadge role={picked.role} /> : null}{shop ? ' · ' + shop.name : ''}</div>
             </div>
-            <button className="btn ghost" style={{ width: 'auto', padding: '8px 12px' }} onClick={() => { setPicked(null); setPin(''); setErr('') }}>เปลี่ยน</button>
+            <button className="btn ghost" style={{ width: 'auto', padding: '8px 12px' }} onClick={() => { setPicked(null); setPin(''); setErr(''); setStep('user') }}>เปลี่ยน</button>
           </div>
 
-          <div className="pin-dots">
-            {[0, 1, 2, 3, 4, 5].map((i) => (
-              <span key={i} className={'pin-dot' + (i < pin.length ? ' filled' : '')} />
-            ))}
-          </div>
-
-          {err && <div className="pin-err">{err}</div>}
-
-          <div className="pinpad">
-            {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((d) => (
-              <button key={d} className="pinkey" disabled={busy} onClick={() => press(d)}>{d}</button>
-            ))}
-            <button className="pinkey ghost" disabled={busy || pin.length === 0} onClick={back}>⌫</button>
-            <button className="pinkey" disabled={busy} onClick={() => press('0')}>0</button>
-            <button className="pinkey ok" disabled={busy || pin.length < 4} onClick={submit}>{busy ? '…' : '✓'}</button>
-          </div>
+          <PinPad
+            pin={pin}
+            busy={busy}
+            err={err}
+            onPress={press}
+            onBack={back}
+            onSubmit={submit}
+            minLen={4}
+            okLabel="✓"
+          />
         </div>
       )}
     </div>
