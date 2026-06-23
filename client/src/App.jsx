@@ -1335,7 +1335,9 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
 
   // apply a poll result: success → ticket paid; failure → inline error + retry; '' → keep waiting
   const handleBoltResult = (res) => {
-    if (!res) return false // still pending
+    // '' / absent result = still pending (waiting for card tap) → keep polling.
+    // res is always an object while pending, so guard on res.result, not just res.
+    if (!res || !res.result) return false // still pending
     if (res.result === 'CH_SUCCEEDED') {
       if (res.ticket) setT(res.ticket)
       setBolt(null)
