@@ -151,6 +151,19 @@ CREATE TABLE IF NOT EXISTS staff_daily_usage (
   PRIMARY KEY (store_id, user_id, day, kind)
 );
 
+-- §v1.3 Per-staff discount/quota overrides. Each field is NULLABLE: a NULL means
+-- "fall back to the store_settings value for this field". Non-destructive.
+CREATE TABLE IF NOT EXISTS staff_settings (
+  store_id                INTEGER NOT NULL,
+  user_id                 INTEGER NOT NULL,
+  max_discount_percent    NUMERIC(5,2),
+  max_discount_baht       NUMERIC(10,2),
+  daily_discount_quota    INTEGER,
+  daily_staff_price_quota INTEGER,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (store_id, user_id)
+);
+
 -- §v0.6 Queue + per-item service time + technician lock.
 -- Idempotent ADD COLUMN (Postgres) — bootstrap() runs this file every startup.
 ALTER TABLE ticket_item ADD COLUMN IF NOT EXISTS minutes INTEGER;

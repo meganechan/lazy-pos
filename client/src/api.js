@@ -134,6 +134,9 @@ export const api = {
   setItemDiscount: (id, itemId, body) => j(`/api/tickets/${id}/items/${itemId}/discount`, { method: 'PUT', body: JSON.stringify(body) }),
   getSettings: () => j('/api/settings'),
   updateSettings: (body) => j('/api/settings', { method: 'PUT', body: JSON.stringify(body) }),
+  // per-staff discount/quota overrides (owner): { store, staff:[{user_id,name,override,effective}] }
+  getStaffSettings: () => j('/api/settings/staff'),
+  updateStaffSettings: (userId, body) => j(`/api/settings/staff/${userId}`, { method: 'PUT', body: JSON.stringify(body) }),
   usageToday: () => j('/api/usage/today'),
 
   /* ── technician queue + assignment + start ── */
