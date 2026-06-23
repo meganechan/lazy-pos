@@ -1,0 +1,16 @@
+{
+  "name": "Lazy Nail POS",
+  "short_name": "Lazy POS",
+  "description": "นัด/คิว/ชำระเงิน ร้านทำเล็บ",
+  "display": "standalone",
+  "orientation": "any",
+  "start_url": "/",
+  "scope": "/",
+  "theme_color": "#18181b",
+  "background_color": "#ffffff",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
