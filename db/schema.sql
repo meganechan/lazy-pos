@@ -91,3 +91,10 @@ CREATE TABLE IF NOT EXISTS audit_log (
   detail        JSONB,
   created_at    TIMESTAMPTZ DEFAULT now()
 );
+
+-- §v0.6 Queue + per-item service time + technician lock.
+-- Idempotent ADD COLUMN (Postgres) — bootstrap() runs this file every startup.
+ALTER TABLE ticket_item ADD COLUMN IF NOT EXISTS minutes INTEGER;
+ALTER TABLE ticket ADD COLUMN IF NOT EXISTS assigned_user_id INTEGER REFERENCES app_user(id);
+ALTER TABLE ticket ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
+ALTER TABLE ticket ADD COLUMN IF NOT EXISTS est_minutes INTEGER;

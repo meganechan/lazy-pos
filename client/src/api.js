@@ -104,7 +104,13 @@ export const api = {
   ticket: (id) => j(`/api/tickets/${id}`),
   newTicket: (body) => j('/api/tickets', { method: 'POST', body: JSON.stringify(body) }),
   addItem: (id, body) => j(`/api/tickets/${id}/items`, { method: 'POST', body: JSON.stringify(body) }),
+  updateItem: (ticketId, itemId, body) => j(`/api/tickets/${ticketId}/items/${itemId}`, { method: 'PUT', body: JSON.stringify(body) }),
   delItem: (id, itemId) => j(`/api/tickets/${id}/items/${itemId}`, { method: 'DELETE' }),
+
+  /* ── technician queue + assignment + start ── */
+  queue: () => j('/api/queue'),
+  assignTech: (id, assigned_user_id) => j(`/api/tickets/${id}/assign`, { method: 'PUT', body: JSON.stringify({ assigned_user_id }) }),
+  startTicket: (id, assigned_user_id) => j(`/api/tickets/${id}/start`, { method: 'POST', body: JSON.stringify(assigned_user_id != null ? { assigned_user_id } : {}) }),
   sendQuote: (id) => j(`/api/tickets/${id}/quote/send`, { method: 'POST' }),
   confirmQuote: (id) => j(`/api/tickets/${id}/quote/confirm`, { method: 'POST' }),
   pay: (id, body) => j(`/api/tickets/${id}/payments`, { method: 'POST', body: JSON.stringify(body) }),

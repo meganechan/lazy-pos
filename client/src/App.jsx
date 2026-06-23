@@ -70,6 +70,7 @@ export default function App() {
     else if (view.kind === 'editUser') { title = 'แก้ไขผู้ใช้'; sub = 'Edit user' }
   } else {
     if (tab === 'members') { title = 'สมาชิก'; sub = 'Members' }
+    else if (tab === 'queue') { title = 'คิวช่าง'; sub = 'Queue' }
     else if (tab === 'services') { title = 'บริการ'; sub = 'Services' }
     else if (tab === 'tickets') { title = 'บิลทั้งหมด'; sub = 'Tickets' }
     else if (tab === 'users') { title = 'จัดการผู้ใช้'; sub = 'Users' }
@@ -119,6 +120,8 @@ export default function App() {
           <Dashboard flash={flash} openTicket={openTicket} onNewTicket={() => setView({ kind: 'newTicket' })} onNewMember={() => setView({ kind: 'newMember' })} />
         ) : tab === 'members' ? (
           <Members openMember={openMember} onNewMember={() => setView({ kind: 'newMember' })} />
+        ) : tab === 'queue' ? (
+          <QueueBoard flash={flash} openTicket={openTicket} />
         ) : tab === 'services' ? (
           <Services flash={flash} isOwner={isOwner} />
         ) : tab === 'users' && isOwner ? (
@@ -141,6 +144,9 @@ export default function App() {
           </button>
           <button className={tab === 'members' ? 'active' : ''} onClick={() => goTab('members')}>
             <span className="tico">👥</span>สมาชิก
+          </button>
+          <button className={tab === 'queue' ? 'active' : ''} onClick={() => goTab('queue')}>
+            <span className="tico">⏱️</span>คิว
           </button>
           <button className={tab === 'services' ? 'active' : ''} onClick={() => goTab('services')}>
             <span className="tico">💅</span>บริการ
@@ -497,22 +503,110 @@ function Tickets({ openTicket }) {
   )
 }
 
+/* ───────────────────────── Queue board ───────────────────────── */
+function QueueBoard({ flash, openTicket }) {
+  const [q, setQ] = useState(null)
+
+  const load = () => api.queue().then(setQ).catch(() => flash('โหลดคิวไม่สำเร็จ'))
+  useEffect(() => {
+    load()
+    const iv = setInterval(load, 30000) // soft refresh
+    return () => clearInterval(iv)
+  }, [])
+
+  if (!q) return <Loading />
+
+  const techs = q.technicians || []
+  const waiting = q.waiting || []
+
+  return (
+    <>
+      <div className="section-title">ช่าง</div>
+      {techs.length === 0 ? (
+        <div className="empty"><div className="big">💁‍♀️</div>ยังไม่มีช่าง</div>
+      ) : (
+        techs.map((tech) => {
+          const busy = tech.status === 'busy'
+          return (
+            <div className="li" key={tech.id}>
+              <div className="avatar">{(tech.name || '?').charAt(0).toUpperCase()}</div>
+              <div className="grow">
+                <div className="name">{tech.name}</div>
+                <div className="meta">
+                  {busy ? (
+                    <>
+                      ติดถึง {fmtTime(tech.busy_until)} (เหลือ {N(tech.remaining_min)} นาที)
+                      {tech.current_ticket_label ? ' · ' + tech.current_ticket_label : ''}
+                    </>
+                  ) : (
+                    'พร้อมรับงาน'
+                  )}
+                </div>
+              </div>
+              <span className={'badge ' + (busy ? 'failed' : 'done')}>
+                {busy ? '🔴 ไม่ว่าง' : '🟢 ว่าง'}
+              </span>
+            </div>
+          )
+        })
+      )}
+
+      <div className="section-title">รอคิว / กำลังทำ</div>
+      {waiting.length === 0 ? (
+        <div className="empty"><div className="big">✨</div>ไม่มีงานในคิว</div>
+      ) : (
+        waiting.map((w) => (
+          <div className="li" key={w.ticket_id} onClick={() => openTicket(w.ticket_id)}>
+            <div className="avatar">{(w.member_name || '?').charAt(0).toUpperCase()}</div>
+            <div className="grow">
+              <div className="name">{w.member_name || 'ลูกค้าทั่วไป'}</div>
+              <div className="meta">
+                ช่าง: {w.assigned_name || 'ยังไม่มอบหมาย'} · ⏱️ ~{N(w.est_minutes)} นาที
+              </div>
+            </div>
+            <span className="chev">›</span>
+          </div>
+        ))
+      )}
+    </>
+  )
+}
+
 /* ───────────────────────── New ticket ───────────────────────── */
 function NewTicket({ flash, preMember, onCreated }) {
   const [members, setMembers] = useState(null)
   const [memberId, setMemberId] = useState(preMember ? String(preMember) : '')
-  const [staff, setStaff] = useState('')
+  const [techs, setTechs] = useState([]) // [{id,name,role}]
+  const [techStatus, setTechStatus] = useState({}) // userId -> {status, busy_until}
+  const [assignId, setAssignId] = useState('')
   const [creating, setCreating] = useState(false)
 
   useEffect(() => {
     api.members().then(setMembers).catch(() => setMembers([]))
+    api.authUsers().then(setTechs).catch(() => setTechs([]))
+    api.queue()
+      .then((q) => {
+        const map = {}
+        ;(q.technicians || []).forEach((t) => { map[t.id] = t })
+        setTechStatus(map)
+      })
+      .catch(() => setTechStatus({}))
   }, [])
+
+  // busy info for the currently-selected technician (override allowed)
+  const selBusy = assignId && techStatus[Number(assignId)] && techStatus[Number(assignId)].status === 'busy'
+    ? techStatus[Number(assignId)]
+    : null
 
   const create = () => {
     setCreating(true)
     const body = {}
     if (memberId) body.member_id = Number(memberId)
-    if (staff.trim()) body.staff_name = staff.trim()
+    if (assignId) {
+      body.assigned_user_id = Number(assignId)
+      const tech = techs.find((t) => N(t.id) === N(assignId))
+      if (tech) body.staff_name = tech.name
+    }
     api.newTicket(body)
       .then((t) => { flash('เปิดบิลแล้ว'); onCreated(t) })
       .catch((e) => { setCreating(false); flash('ผิดพลาด: ' + e.message) })
@@ -527,8 +621,24 @@ function NewTicket({ flash, preMember, onCreated }) {
           <option key={m.id} value={m.id}>{m.name}{m.phone ? ' · ' + m.phone : ''}</option>
         ))}
       </select>
-      <label>ช่างผู้ทำ</label>
-      <input value={staff} onChange={(e) => setStaff(e.target.value)} placeholder="ชื่อช่าง" />
+      <label>ช่าง (มอบหมาย)</label>
+      <select value={assignId} onChange={(e) => setAssignId(e.target.value)}>
+        <option value="">— ยังไม่มอบหมาย —</option>
+        {techs.map((tech) => {
+          const ts = techStatus[tech.id]
+          const isBusy = ts && ts.status === 'busy'
+          return (
+            <option key={tech.id} value={tech.id}>
+              {tech.name}{isBusy ? ' (ไม่ว่าง)' : ''}
+            </option>
+          )
+        })}
+      </select>
+      {selBusy && (
+        <div className="note-warn">
+          ⚠️ ช่างไม่ว่างถึง {fmtTime(selBusy.busy_until)} — มอบหมายได้ (เข้าคิว)
+        </div>
+      )}
       <div className="btn-row">
         <button className="btn" disabled={creating} onClick={create}>{creating ? 'กำลังเปิด...' : 'เปิดบิล'}</button>
       </div>
@@ -544,6 +654,8 @@ function TicketView({ id, flash, isOwner, onClosed }) {
   const [edcStep, setEdcStep] = useState(false) // showing EDC simulate buttons
   const [payFail, setPayFail] = useState(false) // EDC failed -> show fallback
   const [priceEdits, setPriceEdits] = useState({}) // itemId -> string
+  const [minutesEdits, setMinutesEdits] = useState({}) // itemId -> string
+  const [techs, setTechs] = useState([]) // [{id,name,role}] for assign prompt
   const [reconcile, setReconcile] = useState(null) // pid that needs manual reconcile (key expired)
 
   const refresh = () => api.ticket(id).then(setT)
@@ -574,6 +686,7 @@ function TicketView({ id, flash, isOwner, onClosed }) {
   useEffect(() => {
     api.ticket(id).then(setT).catch(() => flash('โหลดบิลไม่สำเร็จ'))
     api.services().then(setServices).catch(() => setServices([]))
+    api.authUsers().then(setTechs).catch(() => setTechs([]))
   }, [id])
 
   if (!t) return <Loading />
@@ -585,7 +698,51 @@ function TicketView({ id, flash, isOwner, onClosed }) {
   const items = t.items || []
   const payments = t.payments || []
   const quote = t.quote
+  const inProgress = t.status === 'in_progress'
+  const estMinutes = N(t.est_minutes) || items.reduce((a, it) => a + N(it.minutes) * (N(it.qty) || 1), 0)
   const itemCount = (sid) => items.filter((it) => N(it.service_id) === N(sid)).reduce((a, it) => a + N(it.qty), 0)
+
+  // edit per-item service time
+  const commitMinutes = (it) => {
+    const raw = minutesEdits[it.id]
+    if (raw === undefined) return
+    const newMin = N(raw)
+    if (newMin === N(it.minutes)) {
+      setMinutesEdits((p) => { const c = { ...p }; delete c[it.id]; return c })
+      return
+    }
+    setBusy(true)
+    api.updateItem(id, it.id, { minutes: newMin })
+      .then((d) => {
+        setT(d); setBusy(false)
+        setMinutesEdits((p) => { const c = { ...p }; delete c[it.id]; return c })
+        flash('แก้เวลาแล้ว')
+      })
+      .catch((e) => { setBusy(false); flash('แก้เวลาไม่สำเร็จ: ' + e.message) })
+  }
+
+  // start work: needs an assigned tech; if none, prompt to pick one
+  const startWork = () => {
+    if (!t.assigned_user_id) {
+      const names = techs.map((u, i) => `${i + 1}. ${u.name}`).join('\n')
+      const pick = typeof window !== 'undefined'
+        ? window.prompt('ยังไม่ได้มอบหมายช่าง — พิมพ์เลขช่างเพื่อเริ่มงาน:\n' + names)
+        : null
+      if (!pick) { flash('กรุณามอบหมายช่างก่อนเริ่มงาน'); return }
+      const idx = Number(pick) - 1
+      const chosen = techs[idx]
+      if (!chosen) { flash('เลือกช่างไม่ถูกต้อง'); return }
+      setBusy(true)
+      api.startTicket(id, chosen.id)
+        .then((d) => { setT(d); setBusy(false); flash('เริ่มงานแล้ว') })
+        .catch((e) => { setBusy(false); flash('เริ่มงานไม่สำเร็จ: ' + e.message) })
+      return
+    }
+    setBusy(true)
+    api.startTicket(id)
+      .then((d) => { setT(d); setBusy(false); flash('เริ่มงานแล้ว') })
+      .catch((e) => { setBusy(false); flash('เริ่มงานไม่สำเร็จ: ' + e.message) })
+  }
 
   const addService = (s) => {
     setBusy(true)
@@ -700,10 +857,21 @@ function TicketView({ id, flash, isOwner, onClosed }) {
             <div className="name" style={{ fontSize: 17 }}>
               {t.member ? t.member.name : 'ลูกค้าทั่วไป (Walk-in)'}
             </div>
-            <div className="meta">ช่าง: {t.staff_name || '-'} · บิล #{t.id}</div>
+            <div className="meta">ช่าง: {t.assigned_name || t.staff_name || '-'} · บิล #{t.id}</div>
           </div>
           <StatusBadge status={t.status} />
         </div>
+        {t.busy_until && (
+          <div className="meta" style={{ marginTop: 8 }}>
+            ⏱️ เสร็จโดยประมาณ {fmtTime(t.busy_until)}
+            {t.est_minutes ? ' (~' + N(t.est_minutes) + ' นาที)' : ''}
+          </div>
+        )}
+        {!t.started_at && !isClosed && items.length > 0 && (
+          <div className="btn-row">
+            <button className="btn" disabled={busy} onClick={startWork}>▶️ เริ่มงาน</button>
+          </div>
+        )}
       </div>
 
       {/* ITEMS in cart */}
@@ -716,7 +884,7 @@ function TicketView({ id, flash, isOwner, onClosed }) {
             <div className="row">
               <div className="grow">
                 <div className="name">{it.service_name} {it.category && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>{it.category}</span>}</div>
-                <div className="meta">จำนวน {N(it.qty)}</div>
+                <div className="meta">จำนวน {N(it.qty)} · ⏱️ {N(it.minutes)} นาที</div>
               </div>
               <button className="btn ghost" style={{ width: 'auto', padding: '8px 12px' }} onClick={() => removeItem(it.id)}>ลบ</button>
             </div>
@@ -732,6 +900,22 @@ function TicketView({ id, flash, isOwner, onClosed }) {
                 style={{ width: 'auto', padding: '8px 14px' }}
                 disabled={busy || priceEdits[it.id] === undefined}
                 onClick={() => commitPrice(it)}
+              >
+                แก้
+              </button>
+            </div>
+            <label>เวลา (นาที)</label>
+            <div className="row">
+              <input
+                type="number"
+                value={minutesEdits[it.id] !== undefined ? minutesEdits[it.id] : String(N(it.minutes))}
+                onChange={(e) => setMinutesEdits((p) => ({ ...p, [it.id]: e.target.value }))}
+              />
+              <button
+                className="btn secondary"
+                style={{ width: 'auto', padding: '8px 14px' }}
+                disabled={busy || minutesEdits[it.id] === undefined}
+                onClick={() => commitMinutes(it)}
               >
                 แก้
               </button>
@@ -767,6 +951,9 @@ function TicketView({ id, flash, isOwner, onClosed }) {
         <div className="t">ยอดรวม</div>
         <div className="v">{baht(total)}</div>
       </div>
+      {estMinutes > 0 && (
+        <div className="meta center" style={{ marginTop: 2 }}>⏱️ ~{estMinutes} นาที</div>
+      )}
 
       {/* LINE QUOTE STEP */}
       <div className="section-title">สรุปราคาทาง LINE</div>
@@ -1247,6 +1434,18 @@ function fmtDate(s) {
     const d = new Date(s)
     if (isNaN(d.getTime())) return s
     return d.toLocaleString('th-TH', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+  } catch {
+    return s
+  }
+}
+
+// ISO string -> HH:MM (24h)
+function fmtTime(s) {
+  if (!s) return '-'
+  try {
+    const d = new Date(s)
+    if (isNaN(d.getTime())) return s
+    return d.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', hour12: false })
   } catch {
     return s
   }

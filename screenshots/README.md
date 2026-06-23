@@ -33,6 +33,10 @@ as **owner**.
 | 24 | `24-audit-log.png` | Audit log timeline (owner) + filter chips |
 | 25 | `25-staff-blocked.png` | Logged in as **staff** — no Users/Audit tabs (UI gated) |
 | 26 | `26-staff-no-void.png` | Staff ticket view — void button hidden (owner-only) |
+| 27 | `27-queue-board.png` | Queue board (v0.6) — 🟢 available / 🔴 busy-until-HH:MM techs |
+| 28 | `28-assign-busy-warning.png` | New ticket — assign technician + busy warning (override ok) |
+| 29 | `29-ticket-time-tech.png` | Ticket — per-item ⏱️ minutes, est total, assigned tech, ▶️ start |
+| 30 | `30-ticket-started-locked.png` | After start — เสร็จโดยประมาณ HH:MM (tech locked) |
 
 > **RBAC (v0.4)**: PIN login per user (scrypt-hashed — separate from the SACRED
 > idempotency hash), in-memory session token sent as `Authorization: Bearer`.
@@ -40,6 +44,12 @@ as **owner**.
 > 403), UI gating is just UX. Demo PINs (demo-only, stored hashed): owner `1234`,
 > staff `5678`. Audit log records login, user CRUD, service price change, payment
 > void, ticket close.
+>
+> **Queue + service time (v0.6)**: each ticket_item has `minutes` (default from
+> service.duration_min, editable); a ticket sums them into `est_minutes`. Starting a
+> ticket with an assigned technician sets `started_at` → `busy_until = started_at +
+> est_minutes`, locking that tech (🔴 busy) on the queue board until done/closed.
+> Assigning a busy tech warns but allows override (queue).
 >
 > Payment is decoupled from closing the sale (spec §1): EDC failure offers
 > cash / unpaid fallback so a ticket never gets stuck. Beam & LINE are mocked

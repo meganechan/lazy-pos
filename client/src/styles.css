@@ -229,6 +229,11 @@ input:focus, select:focus { outline: 2px solid var(--rose-soft); border-color: v
 .tl-body { flex: 1; background: var(--card); border: 1px solid var(--line);
   border-radius: 12px; padding: 12px 14px; margin-bottom: 8px; }
 
+/* inline warning note (e.g. busy technician) */
+.note-warn { margin-top: 10px; padding: 10px 12px; border-radius: 12px;
+  font-size: 13px; font-weight: 600; color: var(--warn);
+  background: #f5ecdc; border: 1px solid #e7d6b8; }
+
 .empty { text-align: center; color: var(--muted); padding: 40px 20px; }
 .empty .big { font-size: 40px; }
 .toast { position: fixed; bottom: 150px; left: 50%; transform: translateX(-50%);

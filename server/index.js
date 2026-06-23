@@ -93,16 +93,49 @@ async function audit(actorUserId, storeId, action, entity, entityId, detail) {
 }
 
 // ---- helpers ----
+
+// §v0.6 — derived "busy until" for a ticket. A ticket locks its technician only
+// while in_progress with both started_at and est_minutes set. Returns a Date or
+// null. busy_until = started_at + est_minutes*60000ms.
+function busyUntil(t) {
+  if (!t || t.status !== 'in_progress' || !t.started_at || t.est_minutes == null)
+    return null;
+  return new Date(new Date(t.started_at).getTime() + Number(t.est_minutes) * 60000);
+}
+
+// §v0.6 — effective minutes for a ticket_item: explicit minutes, else fall back
+// to the service's duration_min. Row must carry minutes + duration_min columns.
+function itemMinutes(row) {
+  return row.minutes == null ? Number(row.duration_min) || 0 : Number(row.minutes);
+}
+
+// §v0.6 — recompute ticket.est_minutes = Σ(effective minutes × qty) from live
+// items (per-item minutes, falling back to service.duration_min). Persists and
+// returns the new total.
+async function recomputeEstMinutes(ticketId) {
+  const rows = (await q(
+    `SELECT ti.minutes, ti.qty, s.duration_min
+       FROM ticket_item ti JOIN service s ON s.id = ti.service_id
+      WHERE ti.ticket_id=$1`, [ticketId])).rows;
+  const est = rows.reduce((sum, r) => sum + itemMinutes(r) * Number(r.qty), 0);
+  await q('UPDATE ticket SET est_minutes=$2 WHERE id=$1', [ticketId, est]);
+  return est;
+}
+
 async function ticketDetail(id) {
   const t = (await q('SELECT * FROM ticket WHERE id=$1', [id])).rows[0];
   if (!t) return null;
   const member = t.member_id
     ? (await q('SELECT * FROM member WHERE id=$1', [t.member_id])).rows[0]
     : null;
+  const assigned = t.assigned_user_id
+    ? (await q('SELECT id, name, role FROM app_user WHERE id=$1', [t.assigned_user_id])).rows[0]
+    : null;
   const items = (await q(
-    `SELECT ti.*, s.name AS service_name, s.category
+    `SELECT ti.*, s.name AS service_name, s.category, s.duration_min
        FROM ticket_item ti JOIN service s ON s.id = ti.service_id
-      WHERE ti.ticket_id=$1 ORDER BY ti.id`, [id])).rows;
+      WHERE ti.ticket_id=$1 ORDER BY ti.id`, [id])).rows
+    .map(r => ({ ...r, minutes: itemMinutes(r) }));
   const payments = (await q(
     'SELECT * FROM payment WHERE ticket_id=$1 ORDER BY payment_seq', [id])).rows;
   const quote = (await q(
@@ -110,7 +143,14 @@ async function ticketDetail(id) {
   const total = items.reduce((s, i) => s + Number(i.quoted_price) * i.qty, 0);
   const paid = payments.filter(p => p.status === 'success')
     .reduce((s, p) => s + Number(p.amount), 0);
-  return { ...t, member, items, payments, quote, total, paid };
+  const bu = busyUntil(t);
+  return {
+    ...t,
+    member,
+    assigned_name: assigned ? assigned.name : null,
+    busy_until: bu ? bu.toISOString() : null,
+    items, payments, quote, total, paid,
+  };
 }
 
 const app = express();
@@ -342,11 +382,11 @@ app.get('/api/tickets', async (_req, res) => {
 });
 
 app.post('/api/tickets', async (req, res) => {
-  const { member_id, staff_name } = req.body;
+  const { member_id, staff_name, assigned_user_id } = req.body;
   const t = (await q(
-    `INSERT INTO ticket (store_id, member_id, staff_name, status)
-     VALUES (1,$1,$2,'open') RETURNING *`,
-    [member_id || null, staff_name || 'Front desk'])).rows[0];
+    `INSERT INTO ticket (store_id, member_id, staff_name, assigned_user_id, status)
+     VALUES (1,$1,$2,$3,'open') RETURNING *`,
+    [member_id || null, staff_name || 'Front desk', assigned_user_id || null])).rows[0];
   res.json(await ticketDetail(t.id));
 });
 
@@ -357,20 +397,50 @@ app.get('/api/tickets/:id', async (req, res) => {
 });
 
 app.post('/api/tickets/:id/items', async (req, res) => {
-  const { service_id, qty, quoted_price, note } = req.body;
+  const { service_id, qty, quoted_price, note, minutes } = req.body;
   if (!service_id || quoted_price == null)
     return res.status(400).json({ error: 'service_id and quoted_price required' });
+  // §v0.6 — per-item minutes defaults to the service's duration_min when omitted,
+  // so est_minutes is always meaningful even if the client never sends minutes.
+  let mins = minutes;
+  if (mins == null) {
+    const svc = (await q('SELECT duration_min FROM service WHERE id=$1', [service_id])).rows[0];
+    mins = svc ? svc.duration_min : null;
+  }
   await q(
-    `INSERT INTO ticket_item (ticket_id, service_id, qty, quoted_price, note)
-     VALUES ($1,$2,$3,$4,$5)`,
-    [req.params.id, service_id, qty || 1, quoted_price, note || null]);
+    `INSERT INTO ticket_item (ticket_id, service_id, qty, quoted_price, note, minutes)
+     VALUES ($1,$2,$3,$4,$5,$6)`,
+    [req.params.id, service_id, qty || 1, quoted_price, note || null, mins]);
   await q("UPDATE ticket SET status='in_progress' WHERE id=$1 AND status='open'", [req.params.id]);
+  await recomputeEstMinutes(req.params.id);
+  res.json(await ticketDetail(req.params.id));
+});
+
+// §v0.6 — partial update of a ticket item (minutes / quoted_price / qty), then
+// recompute the ticket's est_minutes. Only the provided fields change.
+app.put('/api/tickets/:id/items/:itemId', async (req, res) => {
+  const existing = (await q(
+    'SELECT * FROM ticket_item WHERE id=$1 AND ticket_id=$2',
+    [req.params.itemId, req.params.id])).rows[0];
+  if (!existing) return res.status(404).json({ error: 'item not found' });
+  const { minutes, quoted_price, qty } = req.body || {};
+  const next = {
+    minutes: minutes === undefined ? existing.minutes : minutes,
+    quoted_price: quoted_price === undefined ? existing.quoted_price : quoted_price,
+    qty: qty === undefined ? existing.qty : qty,
+  };
+  await q(
+    `UPDATE ticket_item SET minutes=$3, quoted_price=$4, qty=$5
+      WHERE id=$1 AND ticket_id=$2`,
+    [req.params.itemId, req.params.id, next.minutes, next.quoted_price, next.qty]);
+  await recomputeEstMinutes(req.params.id);
   res.json(await ticketDetail(req.params.id));
 });
 
 app.delete('/api/tickets/:id/items/:itemId', async (req, res) => {
   await q('DELETE FROM ticket_item WHERE id=$1 AND ticket_id=$2',
     [req.params.itemId, req.params.id]);
+  await recomputeEstMinutes(req.params.id);
   res.json(await ticketDetail(req.params.id));
 });
 
@@ -483,10 +553,115 @@ app.post('/api/tickets/:id/payments/:pid/void', requireOwner, async (req, res) =
   res.json(await ticketDetail(req.params.id));
 });
 
+// §v0.6 — assign (or unassign) a technician to a ticket. Pass assigned_user_id
+// null to unassign. Does not change status or start the clock.
+app.put('/api/tickets/:id/assign', async (req, res) => {
+  const t = (await q('SELECT id FROM ticket WHERE id=$1', [req.params.id])).rows[0];
+  if (!t) return res.status(404).json({ error: 'not found' });
+  const { assigned_user_id } = req.body || {};
+  await q('UPDATE ticket SET assigned_user_id=$2 WHERE id=$1',
+    [req.params.id, assigned_user_id || null]);
+  res.json(await ticketDetail(req.params.id));
+});
+
+// §v0.6 — start work: set status=in_progress, started_at=now(), recompute
+// est_minutes, and (optionally) assign a technician. From now the assigned tech
+// is busy/locked until started_at + est_minutes (derived busy_until).
+app.post('/api/tickets/:id/start', async (req, res) => {
+  const t = (await q('SELECT * FROM ticket WHERE id=$1', [req.params.id])).rows[0];
+  if (!t) return res.status(404).json({ error: 'not found' });
+  const { assigned_user_id } = req.body || {};
+  const tech = assigned_user_id !== undefined && assigned_user_id !== null
+    ? assigned_user_id
+    : t.assigned_user_id;
+  await recomputeEstMinutes(req.params.id);
+  await q(
+    `UPDATE ticket
+        SET status='in_progress', started_at=now(), assigned_user_id=$2
+      WHERE id=$1`,
+    [req.params.id, tech || null]);
+  res.json(await ticketDetail(req.params.id));
+});
+
 app.post('/api/tickets/:id/close', async (req, res) => {
   await q("UPDATE ticket SET status='closed', closed_at=now() WHERE id=$1", [req.params.id]);
   await audit(req.user.id, req.user.storeId, 'ticket_close', 'ticket', req.params.id, null);
   res.json(await ticketDetail(req.params.id));
+});
+
+// §v0.6 — Queue board. Computed live from app_user + ticket. A technician is
+// "busy" iff there is an in_progress ticket assigned to them with started_at set
+// whose busy_until (started_at + est_minutes*60000) is still in the future.
+app.get('/api/queue', async (_req, res) => {
+  const now = Date.now();
+  const techs = (await q(
+    'SELECT id, name, role FROM app_user WHERE active ORDER BY role, name')).rows;
+  // Live open/in_progress tickets with member name for labels.
+  const tickets = (await q(
+    `SELECT t.*, m.name AS member_name
+       FROM ticket t LEFT JOIN member m ON m.id = t.member_id
+      WHERE t.status IN ('open','in_progress')
+      ORDER BY t.created_at`)).rows;
+
+  const labelOf = (t) =>
+    `บิล #${t.id} · ${t.member_name || 'ลูกค้าทั่วไป'}`;
+
+  // The single active (busy-counted) ticket per technician, if any.
+  const activeByTech = new Map();
+  for (const t of tickets) {
+    const bu = busyUntil(t);
+    if (bu && bu.getTime() > now && t.assigned_user_id != null) {
+      const prev = activeByTech.get(t.assigned_user_id);
+      // Keep the one finishing latest (the genuine current lock).
+      if (!prev || busyUntil(prev).getTime() < bu.getTime())
+        activeByTech.set(t.assigned_user_id, t);
+    }
+  }
+
+  const technicians = techs.map(tech => {
+    const active = activeByTech.get(tech.id) || null;
+    const bu = active ? busyUntil(active) : null;
+    return {
+      id: tech.id,
+      name: tech.name,
+      role: tech.role,
+      status: active ? 'busy' : 'available',
+      busy_until: bu ? bu.toISOString() : null,
+      remaining_min: bu ? Math.max(0, Math.ceil((bu.getTime() - now) / 60000)) : 0,
+      current_ticket_id: active ? active.id : null,
+      current_ticket_label: active ? labelOf(active) : null,
+    };
+  });
+
+  // Waiting = upcoming work: open/in_progress tickets that are NOT an actively
+  // busy-counted lock (open, assigned-but-not-started, or in_progress whose
+  // estimate has already elapsed).
+  const activeTicketIds = new Set([...activeByTech.values()].map(t => t.id));
+  const waiting = tickets
+    .filter(t => !activeTicketIds.has(t.id))
+    .map(t => ({
+      ticket_id: t.id,
+      member_name: t.member_name || null,
+      assigned_user_id: t.assigned_user_id || null,
+      assigned_name: null, // filled below
+      est_minutes: t.est_minutes == null ? null : Number(t.est_minutes),
+    }));
+
+  // Resolve assigned_name for waiting rows (assignee may be an inactive user, so
+  // look up any ids not covered by the active technician list — one batched query).
+  const nameById = new Map(techs.map(u => [u.id, u.name]));
+  const missing = [...new Set(
+    waiting.map(w => w.assigned_user_id).filter(uid => uid != null && !nameById.has(uid)))];
+  if (missing.length) {
+    const extra = (await q(
+      'SELECT id, name FROM app_user WHERE id = ANY($1)', [missing])).rows;
+    for (const u of extra) nameById.set(u.id, u.name);
+  }
+  for (const w of waiting) {
+    if (w.assigned_user_id != null) w.assigned_name = nameById.get(w.assigned_user_id) || null;
+  }
+
+  res.json({ technicians, waiting });
 });
 
 // ---- static client ----
