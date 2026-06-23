@@ -136,6 +136,64 @@ async function recomputeEstMinutes(ticketId) {
   return est;
 }
 
+// §v1.2 — discount + staff-pricing helpers.
+// round2: money rounding to 2 decimals (Math.round avoids float drift).
+const round2 = (x) => Math.round(Number(x) * 100) / 100;
+const clamp = (x, lo, hi) => Math.min(Math.max(Number(x), lo), hi);
+
+// discountAmount: pure. percent → gross * clamp(value,0,100)/100; baht →
+// min(max(value,0), gross). Never exceeds gross, never negative. Anything else
+// (null/unknown type) → 0.
+function discountAmount(gross, type, value) {
+  const g = Number(gross) || 0;
+  const v = Number(value);
+  if (!Number.isFinite(v)) return 0;
+  if (type === 'percent') return round2(g * clamp(v, 0, 100) / 100);
+  if (type === 'baht') return round2(Math.min(Math.max(v, 0), g));
+  return 0;
+}
+
+// getSettings: store_settings row, or the all-zero defaults if none. Read-only —
+// never inserts a row (PUT /api/settings owns creation).
+async function getSettings(storeId) {
+  const row = (await q('SELECT * FROM store_settings WHERE store_id=$1', [storeId])).rows[0];
+  return row || {
+    max_discount_percent: 0,
+    max_discount_baht: 0,
+    daily_discount_quota: 0,
+    daily_staff_price_quota: 0,
+  };
+}
+
+// verifyOwnerPin: true if `pin` matches ANY active owner's PIN for this store.
+// Reuses verifyPin from ./auth.js (hashing untouched). Empty pin → false.
+async function verifyOwnerPin(storeId, pin) {
+  if (!pin) return false;
+  const owners = (await q(
+    "SELECT pin_hash FROM app_user WHERE store_id=$1 AND role='owner' AND active",
+    [storeId])).rows;
+  return owners.some((o) => verifyPin(pin, o.pin_hash));
+}
+
+// todayUsage: how many `kind` actions this user has logged today (0 if none).
+async function todayUsage(storeId, userId, kind) {
+  const row = (await q(
+    `SELECT count FROM staff_daily_usage
+      WHERE store_id=$1 AND user_id=$2 AND day=CURRENT_DATE AND kind=$3`,
+    [storeId, userId, kind])).rows[0];
+  return row ? Number(row.count) : 0;
+}
+
+// bumpUsage: increment today's counter for (store,user,kind), upserting the row.
+async function bumpUsage(storeId, userId, kind) {
+  await q(
+    `INSERT INTO staff_daily_usage (store_id, user_id, day, kind, count)
+     VALUES ($1,$2,CURRENT_DATE,$3,1)
+     ON CONFLICT (store_id, user_id, day, kind)
+     DO UPDATE SET count = staff_daily_usage.count + 1`,
+    [storeId, userId, kind]);
+}
+
 // §v0.8 — store-scoped ticket detail. storeId constrains the parent ticket
 // lookup; if the ticket is not in this store (or absent) → null (caller 404s).
 // All child rows (member, items, payments, quote) hang off this scoped ticket.
@@ -153,12 +211,33 @@ async function ticketDetail(id, storeId) {
     `SELECT ti.*, COALESCE(s.name, ti.custom_name) AS service_name, s.category, s.duration_min
        FROM ticket_item ti LEFT JOIN service s ON s.id = ti.service_id
       WHERE ti.ticket_id=$1 ORDER BY ti.id`, [id])).rows
-    .map(r => ({ ...r, minutes: itemMinutes(r), is_custom: r.service_id == null }));
+    .map(r => {
+      // §v1.2 — per-item discount: gross = price×qty, net = gross − discount.
+      const gross = Number(r.quoted_price) * r.qty;
+      const discount_amount = discountAmount(gross, r.discount_type, r.discount_value);
+      return {
+        ...r,
+        minutes: itemMinutes(r),
+        is_custom: r.service_id == null,
+        discount_type: r.discount_type ?? null,
+        discount_value: r.discount_value == null ? null : Number(r.discount_value),
+        discount_amount,
+        net: round2(gross - discount_amount),
+      };
+    });
   const payments = (await q(
     'SELECT * FROM payment WHERE ticket_id=$1 ORDER BY payment_seq', [id])).rows;
   const quote = (await q(
     'SELECT * FROM quote_confirm WHERE ticket_id=$1 ORDER BY id DESC LIMIT 1', [id])).rows[0] || null;
-  const total = items.reduce((s, i) => s + Number(i.quoted_price) * i.qty, 0);
+  // §v1.2 — totals after discounts. items_gross = Σ gross; subtotal = Σ net
+  // (after per-item discounts); then the bill-level discount on the subtotal.
+  // `total` stays the NET total so the existing payment flow charges the
+  // discounted amount. discount_total = total savings (for the receipt).
+  const items_gross = round2(items.reduce((s, i) => s + Number(i.quoted_price) * i.qty, 0));
+  const subtotal = round2(items.reduce((s, i) => s + i.net, 0));
+  const bill_discount_amount = discountAmount(subtotal, t.discount_type, t.discount_value);
+  const total = round2(subtotal - bill_discount_amount);
+  const discount_total = round2((items_gross - subtotal) + bill_discount_amount);
   const paid = payments.filter(p => p.status === 'success')
     .reduce((s, p) => s + Number(p.amount), 0);
   const bu = busyUntil(t);
@@ -167,7 +246,11 @@ async function ticketDetail(id, storeId) {
     member,
     assigned_name: assigned ? assigned.name : null,
     busy_until: bu ? bu.toISOString() : null,
-    items, payments, quote, total, paid,
+    discount_type: t.discount_type ?? null,
+    discount_value: t.discount_value == null ? null : Number(t.discount_value),
+    items, payments, quote,
+    items_gross, subtotal, bill_discount_amount, discount_total,
+    total, paid,
   };
 }
 
@@ -592,16 +675,18 @@ app.get('/api/services/:id', async (req, res) => {
 
 // §v0.7 — create a service. Owner only. name + base_price required.
 app.post('/api/services', requireOwner, async (req, res) => {
-  const { name, category, base_price, duration_min, description, active } = req.body || {};
+  const { name, category, base_price, duration_min, description, active, staff_price } = req.body || {};
   if (!name || base_price == null)
     return res.status(400).json({ error: 'name and base_price required' });
+  // §v1.2 — staff_price is optional (null = no staff price, use base_price).
   const s = (await q(
-    `INSERT INTO service (store_id, name, category, base_price, duration_min, description, active)
-     VALUES ($1,$2,$3,$4, COALESCE($5,30), $6, COALESCE($7, TRUE))
+    `INSERT INTO service (store_id, name, category, base_price, duration_min, description, active, staff_price)
+     VALUES ($1,$2,$3,$4, COALESCE($5,30), $6, COALESCE($7, TRUE), $8)
      RETURNING *`,
     [req.user.storeId, name, category || null, base_price,
      duration_min == null ? null : duration_min, description || null,
-     active === undefined ? null : !!active])).rows[0];
+     active === undefined ? null : !!active,
+     staff_price == null || staff_price === '' ? null : staff_price])).rows[0];
   await audit(req.user.id, req.user.storeId, 'service_create', 'service', s.id,
     { name: s.name, base_price: Number(s.base_price) });
   res.json(s);
@@ -615,7 +700,7 @@ app.put('/api/services/:id', requireOwner, async (req, res) => {
     'SELECT * FROM service WHERE id=$1 AND store_id=$2',
     [req.params.id, req.user.storeId])).rows[0];
   if (!existing) return res.status(404).json({ error: 'service not found' });
-  const { name, category, base_price, duration_min, description, active } = req.body || {};
+  const { name, category, base_price, duration_min, description, active, staff_price } = req.body || {};
   const next = {
     name: name === undefined ? existing.name : name,
     category: category === undefined ? existing.category : category,
@@ -623,13 +708,17 @@ app.put('/api/services/:id', requireOwner, async (req, res) => {
     duration_min: duration_min === undefined ? existing.duration_min : duration_min,
     description: description === undefined ? existing.description : description,
     active: active === undefined ? existing.active : !!active,
+    // §v1.2 — staff_price: undefined = leave as-is; '' / null = clear to NULL.
+    staff_price: staff_price === undefined ? existing.staff_price
+      : (staff_price === '' || staff_price === null ? null : staff_price),
   };
   const s = (await q(
     `UPDATE service SET name=$2, category=$3, base_price=$4,
-        duration_min=$5, description=$6, active=$7
+        duration_min=$5, description=$6, active=$7, staff_price=$9
       WHERE id=$1 AND store_id=$8 RETURNING *`,
     [req.params.id, next.name, next.category, next.base_price,
-     next.duration_min, next.description, next.active, req.user.storeId])).rows[0];
+     next.duration_min, next.description, next.active, req.user.storeId,
+     next.staff_price])).rows[0];
   if (base_price !== undefined && Number(base_price) !== Number(existing.base_price)) {
     await audit(req.user.id, req.user.storeId, 'service_price_change', 'service', s.id,
       { old_price: Number(existing.base_price), new_price: Number(s.base_price) });
@@ -858,22 +947,45 @@ app.post('/api/tickets/:id/items', async (req, res) => {
     'SELECT id FROM ticket WHERE id=$1 AND store_id=$2',
     [req.params.id, req.user.storeId])).rows[0];
   if (!ticket) return res.status(404).json({ error: 'not found' });
-  const { service_id, qty, quoted_price, note, minutes } = req.body;
+  const { service_id, qty, quoted_price, note, minutes, is_staff_price, override_pin } = req.body;
   if (!service_id || quoted_price == null)
     return res.status(400).json({ error: 'service_id and quoted_price required' });
   // §v0.8 — the chosen service must belong to this store too (no cross-tenant
-  // service references). Doubles as the duration_min lookup.
+  // service references). Doubles as the duration_min + staff_price lookup.
   const svc = (await q(
-    'SELECT duration_min FROM service WHERE id=$1 AND store_id=$2',
+    'SELECT duration_min, staff_price FROM service WHERE id=$1 AND store_id=$2',
     [service_id, req.user.storeId])).rows[0];
   if (!svc) return res.status(404).json({ error: 'service not found' });
+  // §v1.2 — staff pricing. Only takes effect if the service actually has a
+  // staff_price; otherwise the flag is ignored (normal price, is_staff_price
+  // false). When a non-owner actually uses staff price, it costs a daily quota
+  // slot; over quota requires an owner-PIN override (same 403 contract).
+  let price = quoted_price;
+  let useStaffPrice = false;
+  if (is_staff_price && svc.staff_price != null) {
+    useStaffPrice = true;
+    price = svc.staff_price;
+    if (req.user.role !== 'owner') {
+      const { daily_staff_price_quota } = await getSettings(req.user.storeId);
+      const used = await todayUsage(req.user.storeId, req.user.id, 'staff_price');
+      if (used < daily_staff_price_quota) {
+        await bumpUsage(req.user.storeId, req.user.id, 'staff_price');
+      } else if (!override_pin) {
+        return res.status(403).json({ error: 'override_required', need_override: true, reason: 'quota' });
+      } else if (!(await verifyOwnerPin(req.user.storeId, override_pin))) {
+        return res.status(403).json({ error: 'override_failed', need_override: true });
+      } else {
+        await bumpUsage(req.user.storeId, req.user.id, 'override');
+      }
+    }
+  }
   // §v0.6 — per-item minutes defaults to the service's duration_min when omitted,
   // so est_minutes is always meaningful even if the client never sends minutes.
   const mins = minutes == null ? svc.duration_min : minutes;
   await q(
-    `INSERT INTO ticket_item (ticket_id, service_id, qty, quoted_price, note, minutes)
-     VALUES ($1,$2,$3,$4,$5,$6)`,
-    [req.params.id, service_id, qty || 1, quoted_price, note || null, mins]);
+    `INSERT INTO ticket_item (ticket_id, service_id, qty, quoted_price, note, minutes, is_staff_price)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [req.params.id, service_id, qty || 1, price, note || null, mins, useStaffPrice]);
   await q("UPDATE ticket SET status='in_progress' WHERE id=$1 AND status='open'", [req.params.id]);
   await recomputeEstMinutes(req.params.id);
   res.json(await ticketDetail(req.params.id, req.user.storeId));
@@ -937,6 +1049,128 @@ app.delete('/api/tickets/:id/items/:itemId', async (req, res) => {
     [req.params.itemId, req.params.id]);
   await recomputeEstMinutes(req.params.id);
   res.json(await ticketDetail(req.params.id, req.user.storeId));
+});
+
+// §v1.2 — shared discount permission gate for staff. Returns:
+//   { ok:true, overrode:bool }                → proceed (caller applies+audits)
+//   { ok:false, status, body }                → reply with res.status(status).json(body)
+// Owners always pass without override/quota. Staff: within ceiling AND quota →
+// bump 'discount' and proceed; otherwise need an owner-PIN override (bumps
+// 'override'). reason = 'limit' (over ceiling) else 'quota'.
+async function checkDiscountPermission(user, type, value, override_pin) {
+  if (user.role === 'owner') return { ok: true, overrode: false };
+  const s = await getSettings(user.storeId);
+  const dailyCount = await todayUsage(user.storeId, user.id, 'discount');
+  const withinCeiling = type === 'percent'
+    ? Number(value) <= Number(s.max_discount_percent)
+    : Number(value) <= Number(s.max_discount_baht);
+  const withinQuota = dailyCount < Number(s.daily_discount_quota);
+  if (withinCeiling && withinQuota) {
+    await bumpUsage(user.storeId, user.id, 'discount');
+    return { ok: true, overrode: false };
+  }
+  if (!override_pin) {
+    return { ok: false, status: 403,
+      body: { error: 'override_required', need_override: true, reason: !withinCeiling ? 'limit' : 'quota' } };
+  }
+  if (!(await verifyOwnerPin(user.storeId, override_pin))) {
+    return { ok: false, status: 403, body: { error: 'override_failed', need_override: true } };
+  }
+  await bumpUsage(user.storeId, user.id, 'override');
+  return { ok: true, overrode: true };
+}
+
+// §v1.2 — bill-level discount. CLEAR (falsy type or zero/NaN value) is always
+// allowed for any role; SET requires a valid type + positive value and, for
+// staff, passes the ceiling/quota/override gate.
+app.put('/api/tickets/:id/discount', async (req, res) => {
+  const ticket = (await q(
+    'SELECT id FROM ticket WHERE id=$1 AND store_id=$2',
+    [req.params.id, req.user.storeId])).rows[0];
+  if (!ticket) return res.status(404).json({ error: 'not found' });
+  const { discount_type, discount_value, override_pin } = req.body || {};
+  const val = Number(discount_value);
+  if (!discount_type || !val || Number.isNaN(val)) {
+    await q('UPDATE ticket SET discount_type=NULL, discount_value=NULL WHERE id=$1 AND store_id=$2',
+      [req.params.id, req.user.storeId]);
+    await audit(req.user.id, req.user.storeId, 'discount_clear', 'ticket', req.params.id, { level: 'bill' });
+    return res.json(await ticketDetail(req.params.id, req.user.storeId));
+  }
+  if (!['percent', 'baht'].includes(discount_type) || val <= 0)
+    return res.status(400).json({ error: 'invalid discount' });
+  const gate = await checkDiscountPermission(req.user, discount_type, val, override_pin);
+  if (!gate.ok) return res.status(gate.status).json(gate.body);
+  await q('UPDATE ticket SET discount_type=$3, discount_value=$4 WHERE id=$1 AND store_id=$2',
+    [req.params.id, req.user.storeId, discount_type, val]);
+  await audit(req.user.id, req.user.storeId, 'discount_apply', 'ticket', req.params.id,
+    { level: 'bill', discount_type, discount_value: val, override: !!gate.overrode });
+  res.json(await ticketDetail(req.params.id, req.user.storeId));
+});
+
+// §v1.2 — per-item discount. Same clear/set/quota/override flow as the bill
+// discount; counts toward the SAME 'discount' daily quota.
+app.put('/api/tickets/:id/items/:itemId/discount', async (req, res) => {
+  const item = (await q(
+    `SELECT ti.id FROM ticket_item ti JOIN ticket t ON t.id = ti.ticket_id
+      WHERE ti.id=$1 AND ti.ticket_id=$2 AND t.store_id=$3`,
+    [req.params.itemId, req.params.id, req.user.storeId])).rows[0];
+  if (!item) return res.status(404).json({ error: 'not found' });
+  const { discount_type, discount_value, override_pin } = req.body || {};
+  const val = Number(discount_value);
+  if (!discount_type || !val || Number.isNaN(val)) {
+    await q('UPDATE ticket_item SET discount_type=NULL, discount_value=NULL WHERE id=$1 AND ticket_id=$2',
+      [req.params.itemId, req.params.id]);
+    await audit(req.user.id, req.user.storeId, 'discount_clear', 'ticket_item', req.params.itemId,
+      { level: 'item', item_id: Number(req.params.itemId) });
+    return res.json(await ticketDetail(req.params.id, req.user.storeId));
+  }
+  if (!['percent', 'baht'].includes(discount_type) || val <= 0)
+    return res.status(400).json({ error: 'invalid discount' });
+  const gate = await checkDiscountPermission(req.user, discount_type, val, override_pin);
+  if (!gate.ok) return res.status(gate.status).json(gate.body);
+  await q('UPDATE ticket_item SET discount_type=$3, discount_value=$4 WHERE id=$1 AND ticket_id=$2',
+    [req.params.itemId, req.params.id, discount_type, val]);
+  await audit(req.user.id, req.user.storeId, 'discount_apply', 'ticket_item', req.params.itemId,
+    { level: 'item', item_id: Number(req.params.itemId), discount_type, discount_value: val, override: !!gate.overrode });
+  res.json(await ticketDetail(req.params.id, req.user.storeId));
+});
+
+// §v1.2 — store settings (discount ceilings + daily quotas). GET: any role.
+app.get('/api/settings', async (req, res) => {
+  res.json(await getSettings(req.user.storeId));
+});
+
+// §v1.2 — owner-only upsert of store settings. Numbers coerced + clamped >=0;
+// percent clamped 0..100.
+app.put('/api/settings', requireOwner, async (req, res) => {
+  const b = req.body || {};
+  const num = (x) => { const n = Number(x); return Number.isFinite(n) ? n : 0; };
+  const max_discount_percent = clamp(num(b.max_discount_percent), 0, 100);
+  const max_discount_baht = Math.max(0, num(b.max_discount_baht));
+  const daily_discount_quota = Math.max(0, Math.trunc(num(b.daily_discount_quota)));
+  const daily_staff_price_quota = Math.max(0, Math.trunc(num(b.daily_staff_price_quota)));
+  const row = (await q(
+    `INSERT INTO store_settings
+       (store_id, max_discount_percent, max_discount_baht, daily_discount_quota, daily_staff_price_quota)
+     VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT (store_id) DO UPDATE SET
+       max_discount_percent=$2, max_discount_baht=$3,
+       daily_discount_quota=$4, daily_staff_price_quota=$5, updated_at=now()
+     RETURNING *`,
+    [req.user.storeId, max_discount_percent, max_discount_baht,
+     daily_discount_quota, daily_staff_price_quota])).rows[0];
+  await audit(req.user.id, req.user.storeId, 'settings_update', 'store_settings', req.user.storeId, row);
+  res.json(row);
+});
+
+// §v1.2 — current user's usage counts for today (for the UI to show remaining).
+app.get('/api/usage/today', async (req, res) => {
+  const [discount, staff_price, override] = await Promise.all([
+    todayUsage(req.user.storeId, req.user.id, 'discount'),
+    todayUsage(req.user.storeId, req.user.id, 'staff_price'),
+    todayUsage(req.user.storeId, req.user.id, 'override'),
+  ]);
+  res.json({ discount, staff_price, override });
 });
 
 // LINE confirm (mocked)

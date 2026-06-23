@@ -129,6 +129,13 @@ export const api = {
   updateItem: (ticketId, itemId, body) => j(`/api/tickets/${ticketId}/items/${itemId}`, { method: 'PUT', body: JSON.stringify(body) }),
   delItem: (id, itemId) => j(`/api/tickets/${id}/items/${itemId}`, { method: 'DELETE' }),
 
+  /* ── discounts + staff pricing + settings (§v1.2) ── */
+  setBillDiscount: (id, body) => j(`/api/tickets/${id}/discount`, { method: 'PUT', body: JSON.stringify(body) }),
+  setItemDiscount: (id, itemId, body) => j(`/api/tickets/${id}/items/${itemId}/discount`, { method: 'PUT', body: JSON.stringify(body) }),
+  getSettings: () => j('/api/settings'),
+  updateSettings: (body) => j('/api/settings', { method: 'PUT', body: JSON.stringify(body) }),
+  usageToday: () => j('/api/usage/today'),
+
   /* ── technician queue + assignment + start ── */
   queue: () => j('/api/queue'),
   assignTech: (id, assigned_user_id) => j(`/api/tickets/${id}/assign`, { method: 'PUT', body: JSON.stringify({ assigned_user_id }) }),
