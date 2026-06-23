@@ -1155,6 +1155,7 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   // owner-on-phone = read-only summary: hide all mutate controls
   const readOnly = !!ownerPhone
   const [t, setT] = useState(null)
+  const [loadErr, setLoadErr] = useState('') // §v1.4 — 403 = someone else's bill (staff)
   const [services, setServices] = useState([])
   const [busy, setBusy] = useState(false)
   const [bolt, setBolt] = useState(null) // Beam Bolt card/QR panel: { payment_id, boltIntentId, deepLinkUrl, mode, mock } | null
@@ -1212,7 +1213,10 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   }
 
   useEffect(() => {
-    api.ticket(id).then(setT).catch(() => flash('โหลดบิลไม่สำเร็จ'))
+    api.ticket(id).then(setT).catch((e) => {
+      if (e && e.status === 403) setLoadErr('คุณเข้าถึงได้เฉพาะบิลของตัวเอง')
+      else { setLoadErr('โหลดบิลไม่สำเร็จ'); flash('โหลดบิลไม่สำเร็จ') }
+    })
     api.services().then(setServices).catch(() => setServices([]))
     // owner = manager only (cannot take jobs) → start/assign picker = staff only
     api.authUsers().then((us) => setTechs((us || []).filter((u) => u.role === 'staff'))).catch(() => setTechs([]))
@@ -1235,7 +1239,14 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bolt, boltErr, id])
 
-  if (!t) return <Loading />
+  if (!t) return loadErr
+    ? (
+      <>
+        {onClosed && <button className="btn ghost" style={{ width: 'auto', marginBottom: 12 }} onClick={onClosed}><Icon name="chevron-left" size={18} /> กลับ</button>}
+        <div className="empty"><div className="big"><Icon name="lock" size={32} /></div>{loadErr}</div>
+      </>
+    )
+    : <Loading />
 
   const total = N(t.total)
   const paid = N(t.paid)

@@ -271,6 +271,25 @@ async function ticketDetail(id, storeId) {
   };
 }
 
+// §v1.4 — ticket access guard (staff see only their own bills). Resolves the
+// ticket store-scoped; owner has full access; a staff may only touch a ticket
+// they are assigned to OR opened (created_by). Writes the HTTP error itself and
+// returns null when denied (404 not-in-store, 403 someone else's), so callers
+// do: `const t = await guardTicket(req, res); if (!t) return;`
+async function guardTicket(req, res) {
+  const row = (await q(
+    'SELECT id, assigned_user_id, created_by FROM ticket WHERE id=$1 AND store_id=$2',
+    [req.params.id, req.user.storeId])).rows[0];
+  if (!row) { res.status(404).json({ error: 'not found' }); return null; }
+  if (req.user.role !== 'owner'
+      && row.assigned_user_id !== req.user.id
+      && row.created_by !== req.user.id) {
+    res.status(403).json({ error: 'forbidden' });
+    return null;
+  }
+  return row;
+}
+
 const app = express();
 // Capture the raw request body so the Beam webhook receiver can verify the
 // HMAC signature over the exact bytes (express.json() otherwise discards them).
@@ -646,9 +665,13 @@ app.get('/api/summary', async (req, res) => {
         AND t.store_id=$1`, [storeId])).rows[0];
   const members = (await q(
     'SELECT COUNT(*)::int n FROM member WHERE store_id=$1', [storeId])).rows[0].n;
+  // §v1.4 — staff see only their own open bills in the count; owner sees all.
+  const staffScope = req.user.role !== 'owner';
   const openTickets = (await q(
-    "SELECT COUNT(*)::int n FROM ticket WHERE status IN ('open','in_progress','done') AND store_id=$1",
-    [storeId])).rows[0].n;
+    `SELECT COUNT(*)::int n FROM ticket
+      WHERE status IN ('open','in_progress','done') AND store_id=$1
+        ${staffScope ? 'AND (assigned_user_id=$2 OR created_by=$2)' : ''}`,
+    staffScope ? [storeId, req.user.id] : [storeId])).rows[0].n;
   const services = (await q(
     'SELECT COUNT(*)::int n FROM service WHERE active AND store_id=$1', [storeId])).rows[0].n;
   res.json({ revenue: sales.revenue, txns: sales.txns, members, openTickets, services });
@@ -929,7 +952,9 @@ app.get('/api/members/:id', async (req, res) => {
 });
 
 app.get('/api/tickets', async (req, res) => {
-  // §v0.8 — store-scoped list.
+  // §v0.8 — store-scoped list. §v1.4 — staff see only their own bills
+  // (assigned to them OR opened by them); owner sees the whole store.
+  const staffScope = req.user.role !== 'owner';
   const rows = (await q(
     `SELECT t.*, m.name AS member_name,
             COALESCE(SUM(ti.quoted_price*ti.qty),0)::float AS total
@@ -937,22 +962,26 @@ app.get('/api/tickets', async (req, res) => {
        LEFT JOIN member m ON m.id = t.member_id
        LEFT JOIN ticket_item ti ON ti.ticket_id = t.id
       WHERE t.status IN ('open','in_progress','done') AND t.store_id=$1
-      GROUP BY t.id, m.name ORDER BY t.created_at DESC`, [req.user.storeId])).rows;
+        ${staffScope ? 'AND (t.assigned_user_id=$2 OR t.created_by=$2)' : ''}
+      GROUP BY t.id, m.name ORDER BY t.created_at DESC`,
+    staffScope ? [req.user.storeId, req.user.id] : [req.user.storeId])).rows;
   res.json(rows);
 });
 
 app.post('/api/tickets', async (req, res) => {
   const { member_id, staff_name, assigned_user_id } = req.body;
   // §v0.8 — store_id derived from session (was hardcoded 1).
+  // §v1.4 — record who opened the bill so staff can later see only their own.
   const t = (await q(
-    `INSERT INTO ticket (store_id, member_id, staff_name, assigned_user_id, status)
-     VALUES ($1,$2,$3,$4,'open') RETURNING *`,
+    `INSERT INTO ticket (store_id, member_id, staff_name, assigned_user_id, created_by, status)
+     VALUES ($1,$2,$3,$4,$5,'open') RETURNING *`,
     [req.user.storeId, member_id || null, staff_name || 'Front desk',
-     assigned_user_id || null])).rows[0];
+     assigned_user_id || null, req.user.id])).rows[0];
   res.json(await ticketDetail(t.id, req.user.storeId));
 });
 
 app.get('/api/tickets/:id', async (req, res) => {
+  if (!(await guardTicket(req, res))) return; // §v1.4 staff → own bills only
   const d = await ticketDetail(req.params.id, req.user.storeId);
   if (!d) return res.status(404).json({ error: 'not found' });
   res.json(d);
@@ -960,10 +989,8 @@ app.get('/api/tickets/:id', async (req, res) => {
 
 app.post('/api/tickets/:id/items', async (req, res) => {
   // §v0.8 — verify the ticket is in this store before adding items.
-  const ticket = (await q(
-    'SELECT id FROM ticket WHERE id=$1 AND store_id=$2',
-    [req.params.id, req.user.storeId])).rows[0];
-  if (!ticket) return res.status(404).json({ error: 'not found' });
+  const ticket = await guardTicket(req, res); // §v1.4 staff → own bills only
+  if (!ticket) return;
   const { service_id, qty, quoted_price, note, minutes, is_staff_price, override_pin } = req.body;
   if (!service_id || quoted_price == null)
     return res.status(400).json({ error: 'service_id and quoted_price required' });
@@ -1013,10 +1040,8 @@ app.post('/api/tickets/:id/items', async (req, res) => {
 // service_id NULL and the label in custom_name; rolls into the bill total and
 // est_minutes exactly like a normal item.
 app.post('/api/tickets/:id/custom-item', async (req, res) => {
-  const ticket = (await q(
-    'SELECT id FROM ticket WHERE id=$1 AND store_id=$2',
-    [req.params.id, req.user.storeId])).rows[0];
-  if (!ticket) return res.status(404).json({ error: 'not found' });
+  const ticket = await guardTicket(req, res); // §v1.4 staff → own bills only
+  if (!ticket) return;
   const { name, quoted_price, qty, minutes } = req.body || {};
   if (!name || !String(name).trim() || quoted_price == null)
     return res.status(400).json({ error: 'name and quoted_price required' });
@@ -1034,10 +1059,8 @@ app.post('/api/tickets/:id/custom-item', async (req, res) => {
 // recompute the ticket's est_minutes. Only the provided fields change.
 app.put('/api/tickets/:id/items/:itemId', async (req, res) => {
   // §v0.8 — verify the ticket is in this store before touching its items.
-  const ticket = (await q(
-    'SELECT id FROM ticket WHERE id=$1 AND store_id=$2',
-    [req.params.id, req.user.storeId])).rows[0];
-  if (!ticket) return res.status(404).json({ error: 'not found' });
+  const ticket = await guardTicket(req, res); // §v1.4 staff → own bills only
+  if (!ticket) return;
   const existing = (await q(
     'SELECT * FROM ticket_item WHERE id=$1 AND ticket_id=$2',
     [req.params.itemId, req.params.id])).rows[0];
@@ -1058,10 +1081,8 @@ app.put('/api/tickets/:id/items/:itemId', async (req, res) => {
 
 app.delete('/api/tickets/:id/items/:itemId', async (req, res) => {
   // §v0.8 — verify the ticket is in this store before deleting its items.
-  const ticket = (await q(
-    'SELECT id FROM ticket WHERE id=$1 AND store_id=$2',
-    [req.params.id, req.user.storeId])).rows[0];
-  if (!ticket) return res.status(404).json({ error: 'not found' });
+  const ticket = await guardTicket(req, res); // §v1.4 staff → own bills only
+  if (!ticket) return;
   await q('DELETE FROM ticket_item WHERE id=$1 AND ticket_id=$2',
     [req.params.itemId, req.params.id]);
   await recomputeEstMinutes(req.params.id);
@@ -1101,10 +1122,8 @@ async function checkDiscountPermission(user, type, value, override_pin) {
 // allowed for any role; SET requires a valid type + positive value and, for
 // staff, passes the ceiling/quota/override gate.
 app.put('/api/tickets/:id/discount', async (req, res) => {
-  const ticket = (await q(
-    'SELECT id FROM ticket WHERE id=$1 AND store_id=$2',
-    [req.params.id, req.user.storeId])).rows[0];
-  if (!ticket) return res.status(404).json({ error: 'not found' });
+  const ticket = await guardTicket(req, res); // §v1.4 staff → own bills only
+  if (!ticket) return;
   const { discount_type, discount_value, override_pin } = req.body || {};
   const val = Number(discount_value);
   if (!discount_type || !val || Number.isNaN(val)) {
@@ -1127,6 +1146,7 @@ app.put('/api/tickets/:id/discount', async (req, res) => {
 // §v1.2 — per-item discount. Same clear/set/quota/override flow as the bill
 // discount; counts toward the SAME 'discount' daily quota.
 app.put('/api/tickets/:id/items/:itemId/discount', async (req, res) => {
+  if (!(await guardTicket(req, res))) return; // §v1.4 staff → own bills only
   const item = (await q(
     `SELECT ti.id FROM ticket_item ti JOIN ticket t ON t.id = ti.ticket_id
       WHERE ti.id=$1 AND ti.ticket_id=$2 AND t.store_id=$3`,
@@ -1253,6 +1273,7 @@ app.get('/api/usage/today', async (req, res) => {
 
 // LINE confirm (mocked)
 app.post('/api/tickets/:id/quote/send', async (req, res) => {
+  if (!(await guardTicket(req, res))) return; // §v1.4 staff → own bills only
   // §v0.8 — ticketDetail is store-scoped; null → 404 (incl cross-tenant).
   const d = await ticketDetail(req.params.id, req.user.storeId);
   if (!d) return res.status(404).json({ error: 'not found' });
@@ -1270,10 +1291,8 @@ app.post('/api/tickets/:id/quote/send', async (req, res) => {
 
 app.post('/api/tickets/:id/quote/confirm', async (req, res) => {
   // §v0.8 — verify the ticket is in this store before confirming its quote.
-  const ticket = (await q(
-    'SELECT id FROM ticket WHERE id=$1 AND store_id=$2',
-    [req.params.id, req.user.storeId])).rows[0];
-  if (!ticket) return res.status(404).json({ error: 'not found' });
+  const ticket = await guardTicket(req, res); // §v1.4 staff → own bills only
+  if (!ticket) return;
   await q(
     `UPDATE quote_confirm SET confirmed_at = now()
       WHERE ticket_id=$1 AND id = (SELECT id FROM quote_confirm WHERE ticket_id=$1 ORDER BY id DESC LIMIT 1)`,
@@ -1285,10 +1304,8 @@ app.post('/api/tickets/:id/quote/confirm', async (req, res) => {
 app.post('/api/tickets/:id/payments', async (req, res) => {
   // §v0.8 — store scope only: confirm the ticket belongs to this store before
   // taking payment. The payment/idempotency logic below is UNCHANGED (SACRED).
-  const ticket = (await q(
-    'SELECT id FROM ticket WHERE id=$1 AND store_id=$2',
-    [req.params.id, req.user.storeId])).rows[0];
-  if (!ticket) return res.status(404).json({ error: 'not found' });
+  const ticket = await guardTicket(req, res); // §v1.4 staff → own bills only
+  if (!ticket) return;
   const { method, amount, simulate } = req.body;
   if (!['cash', 'beam_edc', 'unpaid'].includes(method))
     return res.status(400).json({ error: 'bad method' });
@@ -1329,6 +1346,7 @@ app.post('/api/tickets/:id/payments', async (req, res) => {
 // Within 12h: idempotent re-charge with SAME key. Beyond 12h: key expired,
 // mark failed, return 409 needs_reconcile (manual). Pure logic — mock Beam.
 app.post('/api/tickets/:id/payments/:pid/retry', async (req, res) => {
+  if (!(await guardTicket(req, res))) return; // §v1.4 staff → own bills only
   const { simulate } = req.body || {};
   // §v0.8 — scope the payment via its parent ticket's store. Cross-tenant pid →
   // not found (404). SACRED retry/idempotency logic below is UNCHANGED.
@@ -1368,10 +1386,8 @@ app.post('/api/tickets/:id/payments/:pid/retry', async (req, res) => {
 // OWNER ONLY (sensitive). Audits 'payment_void'.
 app.post('/api/tickets/:id/payments/:pid/void', requireOwner, async (req, res) => {
   // §v0.8 — verify the ticket (and thus the payment) is in this store.
-  const ticket = (await q(
-    'SELECT id FROM ticket WHERE id=$1 AND store_id=$2',
-    [req.params.id, req.user.storeId])).rows[0];
-  if (!ticket) return res.status(404).json({ error: 'not found' });
+  const ticket = await guardTicket(req, res); // §v1.4 staff → own bills only
+  if (!ticket) return;
   await q(
     `UPDATE payment SET status='voided' WHERE id=$1 AND ticket_id=$2`,
     [req.params.pid, req.params.id]);
@@ -1388,6 +1404,7 @@ app.post('/api/tickets/:id/payments/:pid/void', requireOwner, async (req, res) =
 // Create a Bolt Intent for a ticket. Persists a pending beam_edc payment row
 // BEFORE calling Beam (INVARIANT 1), then creates the intent via the adapter.
 app.post('/api/tickets/:id/bolt-intent', requireAuth, async (req, res) => {
+  if (!(await guardTicket(req, res))) return; // §v1.4 staff → own bills only
   const ticket = await ticketDetail(req.params.id, req.user.storeId);
   if (!ticket) return res.status(404).json({ error: 'not found' });
 
@@ -1460,6 +1477,7 @@ app.post('/api/tickets/:id/bolt-intent', requireAuth, async (req, res) => {
 // Poll a Bolt Intent for a ticket's payment. ?simulate=success|fail drives the
 // mock adapter. Maps the Bolt result enum onto the payment row status.
 app.get('/api/tickets/:id/bolt-intent/:pid', requireAuth, async (req, res) => {
+  if (!(await guardTicket(req, res))) return; // §v1.4 staff → own bills only
   // Scope the payment via its parent ticket's store — cross-tenant → 404.
   const p = (await q(
     `SELECT p.* FROM payment p JOIN ticket t ON t.id = p.ticket_id
@@ -1501,6 +1519,7 @@ app.get('/api/tickets/:id/bolt-intent/:pid', requireAuth, async (req, res) => {
 // stops waiting for a card tap, then void the (still-pending) payment row.
 // requireAuth (staff drives checkout); store-scoped via the parent ticket.
 app.post('/api/tickets/:id/bolt-intent/:pid/cancel', requireAuth, async (req, res) => {
+  if (!(await guardTicket(req, res))) return; // §v1.4 staff → own bills only
   // Scope the payment via its parent ticket's store — cross-tenant → 404.
   const p = (await q(
     `SELECT p.* FROM payment p JOIN ticket t ON t.id = p.ticket_id
@@ -1538,10 +1557,8 @@ app.post('/api/tickets/:id/bolt-intent/:pid/cancel', requireAuth, async (req, re
 // §v0.6 — assign (or unassign) a technician to a ticket. Pass assigned_user_id
 // null to unassign. Does not change status or start the clock.
 app.put('/api/tickets/:id/assign', async (req, res) => {
-  const t = (await q(
-    'SELECT id FROM ticket WHERE id=$1 AND store_id=$2',
-    [req.params.id, req.user.storeId])).rows[0];
-  if (!t) return res.status(404).json({ error: 'not found' });
+  const t = await guardTicket(req, res); // §v1.4 staff → own bills only
+  if (!t) return;
   const { assigned_user_id } = req.body || {};
   // §v0.8 — the technician must belong to this store too (no cross-tenant assign).
   if (assigned_user_id) {
@@ -1562,10 +1579,8 @@ app.put('/api/tickets/:id/assign', async (req, res) => {
 // est_minutes, and (optionally) assign a technician. From now the assigned tech
 // is busy/locked until started_at + est_minutes (derived busy_until).
 app.post('/api/tickets/:id/start', async (req, res) => {
-  const t = (await q(
-    'SELECT * FROM ticket WHERE id=$1 AND store_id=$2',
-    [req.params.id, req.user.storeId])).rows[0];
-  if (!t) return res.status(404).json({ error: 'not found' });
+  const t = await guardTicket(req, res); // §v1.4 staff → own bills only
+  if (!t) return;
   const { assigned_user_id } = req.body || {};
   const tech = assigned_user_id !== undefined && assigned_user_id !== null
     ? assigned_user_id
@@ -1590,11 +1605,9 @@ app.post('/api/tickets/:id/start', async (req, res) => {
 });
 
 app.post('/api/tickets/:id/close', async (req, res) => {
-  // §v0.8 — scope close to this store. No cross-tenant ticket close.
-  const t = (await q(
-    'SELECT id FROM ticket WHERE id=$1 AND store_id=$2',
-    [req.params.id, req.user.storeId])).rows[0];
-  if (!t) return res.status(404).json({ error: 'not found' });
+  // §v0.8 — scope close to this store. §v1.4 staff → own bills only.
+  const t = await guardTicket(req, res);
+  if (!t) return;
   await q("UPDATE ticket SET status='closed', closed_at=now() WHERE id=$1 AND store_id=$2",
     [req.params.id, req.user.storeId]);
   await audit(req.user.id, req.user.storeId, 'ticket_close', 'ticket', req.params.id, null);
