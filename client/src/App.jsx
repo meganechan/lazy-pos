@@ -45,6 +45,17 @@ function Icon({ name, size = 24, className }) {
   )
 }
 
+/* Brand wordmark "owo" (owo.chat). Styled text now; swap for an asset later by
+   replacing this component's body. Inherits font-size + uses currentColor so it
+   themes (white on dark bars, near-black on white) with an orange accent letter. */
+function Logo({ className = '' }) {
+  return (
+    <span className={'brand-logo ' + className} aria-label="owo" role="img">
+      o<span className="brand-logo-accent">w</span>o
+    </span>
+  )
+}
+
 const roleTH = { owner: 'เจ้าของร้าน', staff: 'พนักงาน' }
 
 /* viewport hook: exposes isLarge (≥768px). matchMedia with cleanup. */
@@ -169,7 +180,7 @@ export default function App() {
         {onBack ? (
           <button className="back" onClick={onBack} aria-label="กลับ"><Icon name="chevron-left" size={22} /></button>
         ) : (
-          <span className="logo">💅</span>
+          <Logo className="logo" />
         )}
         <div className="grow">
           <h1>{title}</h1>
@@ -1759,7 +1770,7 @@ function Login({ onLoggedIn }) {
   return (
     <div className="login">
       <div className="login-head">
-        <div className="login-logo">💅</div>
+        <Logo className="login-logo" />
         <h1>Lazy Nail POS</h1>
         <div className="sub">
           {step === 'shop' ? 'กรอกรหัสร้านเพื่อเข้าสู่ระบบ'
