@@ -997,6 +997,8 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   const [busy, setBusy] = useState(false)
   const [edcStep, setEdcStep] = useState(false) // showing EDC simulate buttons
   const [payFail, setPayFail] = useState(false) // EDC failed -> show fallback
+  const [bolt, setBolt] = useState(null) // Beam Bolt deep-link PoC panel: { payment_id, boltIntentId, deepLink, mock } | null
+  const [boltErr, setBoltErr] = useState('') // inline Bolt failure message (failure enum)
   const [priceEdits, setPriceEdits] = useState({}) // itemId -> string
   const [minutesEdits, setMinutesEdits] = useState({}) // itemId -> string
   const [optSel, setOptSel] = useState({}) // itemId -> { [optionId]: true } selected add-ons
@@ -1034,11 +1036,27 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
     api.authUsers().then(setTechs).catch(() => setTechs([]))
   }, [id])
 
+  // Beam Bolt PoC — real mode auto-poll every ~2.5s while the panel is open.
+  // Stop on success/failure (handled inside handleBoltResult) and clear on unmount/close.
+  // Mock mode does NOT auto-poll (staff drives it with the simulate buttons).
+  useEffect(() => {
+    if (!bolt || bolt.mock || boltErr) return
+    let cancelled = false
+    const iv = setInterval(() => {
+      api.pollBoltIntent(id, bolt.payment_id)
+        .then((res) => { if (!cancelled) handleBoltResult(res) })
+        .catch(() => { /* transient — keep polling */ })
+    }, 2500)
+    return () => { cancelled = true; clearInterval(iv) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bolt, boltErr, id])
+
   if (!t) return <Loading />
 
   const total = N(t.total)
   const paid = N(t.paid)
   const isPaid = paid >= total && total > 0
+  const outstanding = Math.max(0, total - paid) || total // amount still due (fallback to total)
   const isClosed = t.status === 'closed'
   const items = t.items || []
   const payments = t.payments || []
@@ -1215,6 +1233,54 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
         refresh().catch(() => {})
       })
   }
+
+  /* ── Beam Bolt deep-link PoC ──────────────────────────────
+     start: create a pending beam_edc payment + Bolt intent, open the panel.
+     A failure result is one of CH_PROCESSING_FAILED / CH_INSUFFICIENT_FUNDS /
+     CH_AUTHENTICATION_FAILED / BI_EXPIRED / BI_CANCELED. '' = still pending,
+     CH_SUCCEEDED = paid. */
+  const BOLT_FAIL_TH = {
+    CH_PROCESSING_FAILED: 'ประมวลผลการชำระไม่สำเร็จ',
+    CH_INSUFFICIENT_FUNDS: 'ยอดเงินไม่เพียงพอ',
+    CH_AUTHENTICATION_FAILED: 'ยืนยันตัวตนไม่สำเร็จ',
+    BI_EXPIRED: 'ลิงก์ชำระเงินหมดอายุ',
+    BI_CANCELED: 'ลูกค้ายกเลิกการชำระเงิน',
+  }
+
+  const startBolt = () => {
+    setBusy(true)
+    setBoltErr('')
+    api.createBoltIntent(id, { amount: outstanding })
+      .then((d) => { setBolt(d); setBusy(false) })
+      .catch((e) => { setBusy(false); flash('สร้างลิงก์ Bolt ไม่สำเร็จ: ' + e.message) })
+  }
+
+  // apply a poll result: success → ticket paid; failure → inline error + retry; '' → keep waiting
+  const handleBoltResult = (res) => {
+    if (!res) return false // still pending
+    if (res.result === 'CH_SUCCEEDED') {
+      if (res.ticket) setT(res.ticket)
+      setBolt(null)
+      setBoltErr('')
+      flash('ชำระผ่าน Bolt สำเร็จ')
+      return true
+    }
+    // any non-empty, non-success result is a failure enum
+    setBoltErr(BOLT_FAIL_TH[res.result] || res.result || 'การชำระล้มเหลว')
+    return true // stop polling on failure
+  }
+
+  // mock mode: staff taps จำลองสำเร็จ / จำลองล้มเหลว
+  const simulateBolt = (which) => {
+    if (!bolt) return
+    setBusy(true)
+    api.pollBoltIntent(id, bolt.payment_id, which)
+      .then((res) => { setBusy(false); handleBoltResult(res) })
+      .catch((e) => { setBusy(false); flash('จำลองไม่สำเร็จ: ' + e.message) })
+  }
+
+  const cancelBolt = () => { setBolt(null); setBoltErr('') }
+  const retryBolt = () => { setBolt(null); setBoltErr(''); startBolt() }
 
   const closeBill = () => {
     setBusy(true)
@@ -1452,7 +1518,61 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
           )}
 
           {!readOnly && !isPaid && (
-            edcStep ? (
+            bolt ? (
+              <div className="card">
+                <div className="center" style={{ fontSize: 32 }}>💳</div>
+                <div className="center" style={{ fontWeight: 700 }}>สแกน/เปิดแอป Beam Bolt เพื่อชำระ</div>
+                <div className="center muted" style={{ marginBottom: 12 }}>
+                  ยอดชำระ {baht(outstanding)}
+                  {bolt.mock && <span className="badge" style={{ marginLeft: 8 }}>MOCK</span>}
+                </div>
+
+                <div className="btn-row">
+                  <a
+                    className="btn"
+                    href={bolt.deepLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ textAlign: 'center', textDecoration: 'none' }}
+                  >
+                    📲 เปิดแอป Bolt
+                  </a>
+                </div>
+                <div className="center muted" style={{ fontSize: 12, wordBreak: 'break-all', margin: '4px 0 12px' }}>
+                  intent: {bolt.boltIntentId}
+                </div>
+
+                {boltErr ? (
+                  <>
+                    <div className="center" style={{ fontSize: 28 }}>⚠️</div>
+                    <div className="center" style={{ color: 'var(--bad)', fontWeight: 700 }}>ชำระผ่าน Bolt ไม่สำเร็จ</div>
+                    <div className="center muted" style={{ marginBottom: 10 }}>{boltErr}</div>
+                    <div className="btn-row">
+                      <button className="btn" disabled={busy} onClick={retryBolt}>🔁 ลองใหม่</button>
+                      <button className="btn ghost" disabled={busy} onClick={cancelBolt}>ปิด</button>
+                    </div>
+                  </>
+                ) : bolt.mock ? (
+                  <>
+                    <div className="center muted" style={{ marginBottom: 8 }}>โหมดสาธิต — ไม่มี Beam creds จริง</div>
+                    <div className="btn-row">
+                      <button className="btn" disabled={busy} onClick={() => simulateBolt('success')}>✅ จำลองสำเร็จ</button>
+                      <button className="btn dark" disabled={busy} onClick={() => simulateBolt('fail')}>⚠️ จำลองล้มเหลว</button>
+                    </div>
+                    <div className="btn-row">
+                      <button className="btn ghost" disabled={busy} onClick={cancelBolt}>ยกเลิก</button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="center muted" style={{ marginBottom: 10 }}>⏳ กำลังรอผลชำระ…</div>
+                    <div className="btn-row">
+                      <button className="btn ghost" disabled={busy} onClick={cancelBolt}>ยกเลิก</button>
+                    </div>
+                  </>
+                )}
+              </div>
+            ) : edcStep ? (
               <div className="card">
                 <div className="center" style={{ fontSize: 32 }}>💳</div>
                 <div className="center muted" style={{ marginBottom: 10 }}>กำลังรูดบัตรผ่านเครื่อง Beam EDC / Bolt...</div>
@@ -1495,6 +1615,10 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
                 <div className="pay" onClick={() => setEdcStep(true)}>
                   <div className="ico">💳</div>
                   <div className="grow"><div>บัตร (Beam EDC)</div><div className="desc">รูดบัตรเครดิต/เดบิต</div></div>
+                </div>
+                <div className="pay" onClick={startBolt}>
+                  <div className="ico">💳</div>
+                  <div className="grow"><div>บัตร (Beam Bolt · Deep Link) [PoC]</div><div className="desc">เปิดแอป Bolt เพื่อชำระ</div></div>
                 </div>
                 <div className="pay" onClick={() => doPay('unpaid')}>
                   <div className="ico">🕓</div>

@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { createBeamAdapter } from './adapters/beam.js';
+import { createBeamBoltAdapter } from './adapters/beamBolt.js';
 import { createLineAdapter } from './adapters/line.js';
 import {
   hashPin,
@@ -20,6 +21,7 @@ const PORT = process.env.PORT || 8080;
 // Swappable integration adapters — instantiated once from env at startup.
 // Mock now, real later, WITHOUT changing core endpoint logic.
 const beamAdapter = createBeamAdapter(process.env);
+const beamBoltAdapter = createBeamBoltAdapter(process.env);
 const lineAdapter = createLineAdapter(process.env);
 
 // §4 INVARIANT 2: idempotency key may only be reused for retries within this
@@ -872,6 +874,100 @@ app.post('/api/tickets/:id/payments/:pid/void', requireOwner, async (req, res) =
   await audit(req.user.id, req.user.storeId, 'payment_void', 'payment', req.params.pid,
     { ticket_id: req.params.id });
   res.json(await ticketDetail(req.params.id, req.user.storeId));
+});
+
+// ---- Beam Bolt "Deep Link" payments (PoC) ----
+// Separate from the SACRED /payments endpoints above. Same idempotency-key
+// pattern (randomUUID → stored on the payment row → used as the Bolt
+// x-beam-idempotency-key header) and the same INVARIANT 1 persist-before-send.
+
+// Create a Bolt Intent for a ticket. Persists a pending beam_edc payment row
+// BEFORE calling Beam (INVARIANT 1), then creates the intent via the adapter.
+app.post('/api/tickets/:id/bolt-intent', requireAuth, async (req, res) => {
+  const ticket = await ticketDetail(req.params.id, req.user.storeId);
+  if (!ticket) return res.status(404).json({ error: 'not found' });
+
+  const amount =
+    req.body?.amount ?? (Number(ticket.total) - Number(ticket.paid)) ?? ticket.total;
+
+  const seq = (await q(
+    'SELECT COALESCE(MAX(payment_seq),0)+1 AS n FROM payment WHERE ticket_id=$1',
+    [req.params.id])).rows[0].n;
+
+  // INVARIANT 1: persist idempotency key (durable) BEFORE calling Beam.
+  // SAME pattern as the SACRED beam_edc block — randomUUID stored on the row.
+  const key = randomUUID();
+  const p = (await q(
+    `INSERT INTO payment (ticket_id, payment_seq, method, amount, beam_idempotency_key, status)
+     VALUES ($1,$2,'beam_edc',$3,$4,'pending') RETURNING id`,
+    [req.params.id, seq, amount, key])).rows[0];
+  // INVARIANT 1 satisfied: row durable. Now create the Bolt Intent.
+
+  let intent;
+  try {
+    intent = await beamBoltAdapter.createBoltIntent({
+      amountBaht: amount,
+      referenceId: 'tkt-' + req.params.id + '-pay-' + p.id,
+      redirectUrl:
+        (process.env.PUBLIC_BASE_URL || 'http://localhost:8090') +
+        '/?ticket=' + req.params.id,
+      idempotencyKey: key,
+    });
+  } catch (e) {
+    await q(`UPDATE payment SET status='failed' WHERE id=$1`, [p.id]);
+    return res.status(502).json({ error: String(e.message || e) });
+  }
+
+  // PoC: reuse the beam_charge_id column to store the Bolt Intent id so the
+  // poll endpoint can recover it without a schema change.
+  await q(`UPDATE payment SET beam_charge_id=$2 WHERE id=$1`,
+    [p.id, intent.boltIntentId || null]);
+
+  res.json({
+    payment_id: p.id,
+    boltIntentId: intent.boltIntentId,
+    deepLink: intent.deepLink,
+    mock: !!intent.mock,
+  });
+});
+
+// Poll a Bolt Intent for a ticket's payment. ?simulate=success|fail drives the
+// mock adapter. Maps the Bolt result enum onto the payment row status.
+app.get('/api/tickets/:id/bolt-intent/:pid', requireAuth, async (req, res) => {
+  // Scope the payment via its parent ticket's store — cross-tenant → 404.
+  const p = (await q(
+    `SELECT p.* FROM payment p JOIN ticket t ON t.id = p.ticket_id
+      WHERE p.id=$1 AND p.ticket_id=$2 AND t.store_id=$3`,
+    [req.params.pid, req.params.id, req.user.storeId])).rows[0];
+  if (!p) return res.status(404).json({ error: 'payment not found' });
+
+  // boltIntentId was stored in beam_charge_id at creation time (PoC reuse).
+  const boltIntentId = p.beam_charge_id;
+  const { result } = await beamBoltAdapter.getBoltIntent(boltIntentId, {
+    simulate: req.query.simulate,
+  });
+
+  const FAILURES = [
+    'CH_PROCESSING_FAILED', 'CH_INSUFFICIENT_FUNDS', 'CH_AUTHENTICATION_FAILED',
+    'BI_EXPIRED', 'BI_CANCELED',
+  ];
+  let status = p.status;
+  if (result === 'CH_SUCCEEDED') {
+    status = 'success';
+    await q(`UPDATE payment SET status='success' WHERE id=$1`, [p.id]);
+  } else if (FAILURES.includes(result)) {
+    status = 'failed';
+    await q(`UPDATE payment SET status='failed' WHERE id=$1`, [p.id]);
+  } // else: pending → leave status unchanged
+
+  await audit(req.user.id, req.user.storeId, 'payment', 'payment', p.id,
+    { bolt_result: result, status });
+
+  res.json({
+    result,
+    status,
+    ticket: await ticketDetail(req.params.id, req.user.storeId),
+  });
 });
 
 // §v0.6 — assign (or unassign) a technician to a ticket. Pass assigned_user_id

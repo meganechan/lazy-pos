@@ -133,6 +133,13 @@ export const api = {
   pay: (id, body) => j(`/api/tickets/${id}/payments`, { method: 'POST', body: JSON.stringify(body) }),
   voidPayment: (ticketId, pid) => j(`/api/tickets/${ticketId}/payments/${pid}/void`, { method: 'POST' }),
   retryEdc: (ticketId, pid, simulate) => j(`/api/tickets/${ticketId}/payments/${pid}/retry`, { method: 'POST', body: JSON.stringify(simulate ? { simulate } : {}) }),
+
+  /* ── Beam Bolt deep-link (PoC) ──
+     create a pending beam_edc payment + a Beam Bolt deep-link intent, then poll its result.
+     pollBoltIntent appends ?simulate= only when supplied (mock mode demo). */
+  createBoltIntent: (ticketId, body) => j(`/api/tickets/${ticketId}/bolt-intent`, { method: 'POST', body: JSON.stringify(body || {}) }),
+  pollBoltIntent: (ticketId, pid, simulate) => j(`/api/tickets/${ticketId}/bolt-intent/${pid}` + (simulate ? '?simulate=' + encodeURIComponent(simulate) : '')),
+
   close: (id) => j(`/api/tickets/${id}/close`, { method: 'POST' }),
 }
 
