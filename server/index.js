@@ -178,10 +178,17 @@ app.use(express.json({ verify: (req, _res, buf) => { req.rawBody = buf; } }));
 
 // ---- auth middleware ----
 // requireAuth: resolve Bearer token → req.user. Missing/invalid → 401.
-function requireAuth(req, res, next) {
+// async now — sessions are looked up in the DB (durable across restart).
+async function requireAuth(req, res, next) {
   const header = req.headers['authorization'] || '';
   const token = header.startsWith('Bearer ') ? header.slice(7).trim() : null;
-  const session = getSession(token);
+  let session;
+  try {
+    session = await getSession(q, token);
+  } catch (e) {
+    console.error('[requireAuth]', e);
+    return res.status(500).json({ error: 'session_lookup_failed' });
+  }
   if (!session) return res.status(401).json({ error: 'unauthorized' });
   req.user = {
     id: session.userId,
@@ -268,7 +275,7 @@ app.post('/api/auth/login', async (req, res) => {
     'SELECT * FROM app_user WHERE id=$1 AND active', [userId])).rows[0];
   if (!user || !verifyPin(pin, user.pin_hash))
     return res.status(401).json({ error: 'invalid_credentials' });
-  const token = createSession(user);
+  const token = await createSession(q, user);
   await audit(user.id, user.store_id, 'login', 'app_user', user.id, null);
   res.json({
     token,
@@ -401,8 +408,8 @@ app.post('/api/webhooks/beam', async (req, res) => {
 app.use('/api', requireAuth);
 
 // Logout — destroy current session.
-app.post('/api/auth/logout', (req, res) => {
-  destroySession(req.user.token);
+app.post('/api/auth/logout', async (req, res) => {
+  await destroySession(q, req.user.token);
   res.json({ ok: true });
 });
 

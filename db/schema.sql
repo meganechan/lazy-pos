@@ -98,6 +98,21 @@ CREATE TABLE IF NOT EXISTS audit_log (
   created_at    TIMESTAMPTZ DEFAULT now()
 );
 
+-- §v1.0 Durable sessions — survive server restart / deploy (was in-memory).
+-- Token is a random UUID; the row carries a denormalised snapshot of the user
+-- so auth needs a single indexed lookup. expires_at gates validity (30-day TTL
+-- set by the server). Idempotent — bootstrap() runs this file every startup.
+CREATE TABLE IF NOT EXISTS app_session (
+  token       TEXT PRIMARY KEY,
+  user_id     INTEGER NOT NULL REFERENCES app_user(id),
+  name        TEXT NOT NULL,
+  role        TEXT NOT NULL,
+  store_id    INTEGER NOT NULL,
+  expires_at  TIMESTAMPTZ NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_app_session_expires ON app_session (expires_at);
+
 -- §v0.6 Queue + per-item service time + technician lock.
 -- Idempotent ADD COLUMN (Postgres) — bootstrap() runs this file every startup.
 ALTER TABLE ticket_item ADD COLUMN IF NOT EXISTS minutes INTEGER;
