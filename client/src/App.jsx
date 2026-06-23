@@ -182,18 +182,25 @@ function Dashboard({ flash, openTicket, onNewTicket, onNewMember }) {
 /* ───────────────────────── Members ───────────────────────── */
 function Members({ openMember, onNewMember }) {
   const [list, setList] = useState(null)
-  useEffect(() => {
-    api.members().then(setList).catch(() => setList([]))
-  }, [])
+  const [q, setQ] = useState('')
 
-  if (!list) return <Loading />
+  useEffect(() => {
+    const t = setTimeout(() => {
+      api.members(q).then(setList).catch(() => setList([]))
+    }, 250)
+    return () => clearTimeout(t)
+  }, [q])
 
   return (
     <>
       <button className="btn" onClick={onNewMember}>➕ เพิ่มสมาชิกใหม่</button>
       <div className="spacer" />
-      {list.length === 0 ? (
-        <div className="empty"><div className="big">👥</div>ยังไม่มีสมาชิก</div>
+      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="ค้นหาชื่อ/เบอร์..." />
+      <div className="spacer" />
+      {!list ? (
+        <Loading />
+      ) : list.length === 0 ? (
+        <div className="empty"><div className="big">👥</div>{q.trim() ? 'ไม่พบสมาชิกที่ค้นหา' : 'ยังไม่มีสมาชิก'}</div>
       ) : (
         list.map((m) => (
           <div className="li" key={m.id} onClick={() => openMember(m.id)}>
@@ -244,11 +251,23 @@ function NewMember({ flash, onDone }) {
 
 function MemberDetail({ id, flash, onNewTicket, openTicket }) {
   const [m, setM] = useState(null)
+  const [editing, setEditing] = useState(false)
   useEffect(() => {
     api.member(id).then(setM).catch(() => flash('โหลดข้อมูลสมาชิกไม่สำเร็จ'))
   }, [id])
 
   if (!m) return <Loading />
+
+  if (editing) {
+    return (
+      <EditMember
+        m={m}
+        flash={flash}
+        onCancel={() => setEditing(false)}
+        onSaved={(updated) => { setM((prev) => ({ ...prev, ...updated })); setEditing(false) }}
+      />
+    )
+  }
 
   return (
     <>
@@ -269,6 +288,9 @@ function MemberDetail({ id, flash, onNewTicket, openTicket }) {
       <div className="btn-row">
         <button className="btn" onClick={() => onNewTicket(m.id)}>🧾 เปิดบิลให้ลูกค้านี้</button>
       </div>
+      <div className="btn-row">
+        <button className="btn ghost" onClick={() => setEditing(true)}>✏️ แก้ไขข้อมูล</button>
+      </div>
 
       <div className="section-title">ประวัติการมาใช้บริการ</div>
       {!m.history || m.history.length === 0 ? (
@@ -285,6 +307,39 @@ function MemberDetail({ id, flash, onNewTicket, openTicket }) {
         ))
       )}
     </>
+  )
+}
+
+function EditMember({ m, flash, onSaved, onCancel }) {
+  const [name, setName] = useState(m.name || '')
+  const [phone, setPhone] = useState(m.phone || '')
+  const [line, setLine] = useState(m.line_user_id || '')
+  const [notes, setNotes] = useState(m.notes || '')
+  const [saving, setSaving] = useState(false)
+
+  const save = () => {
+    if (!name.trim()) { flash('กรุณากรอกชื่อ'); return }
+    setSaving(true)
+    api.updateMember(m.id, { name: name.trim(), phone: phone.trim() || undefined, line_user_id: line.trim() || undefined, notes: notes.trim() || undefined })
+      .then((updated) => { flash('บันทึกการแก้ไขแล้ว'); onSaved(updated) })
+      .catch((e) => { setSaving(false); flash('ผิดพลาด: ' + e.message) })
+  }
+
+  return (
+    <div className="card">
+      <label>ชื่อ *</label>
+      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อลูกค้า" />
+      <label>เบอร์โทร</label>
+      <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="08x-xxx-xxxx" />
+      <label>LINE User ID</label>
+      <input value={line} onChange={(e) => setLine(e.target.value)} placeholder="U1234..." />
+      <label>โน้ต</label>
+      <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="แพ้น้ำยา, ชอบสีแดง ..." />
+      <div className="btn-row">
+        <button className="btn ghost" disabled={saving} onClick={onCancel}>ยกเลิก</button>
+        <button className="btn" disabled={saving} onClick={save}>{saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
+      </div>
+    </div>
   )
 }
 
@@ -394,8 +449,32 @@ function TicketView({ id, flash, onClosed }) {
   const [edcStep, setEdcStep] = useState(false) // showing EDC simulate buttons
   const [payFail, setPayFail] = useState(false) // EDC failed -> show fallback
   const [priceEdits, setPriceEdits] = useState({}) // itemId -> string
+  const [reconcile, setReconcile] = useState(null) // pid that needs manual reconcile (key expired)
 
   const refresh = () => api.ticket(id).then(setT)
+
+  const voidPay = (p) => {
+    setBusy(true)
+    api.voidPayment(id, p.id)
+      .then((d) => { setT(d); setBusy(false); flash('ยกเลิกการชำระแล้ว') })
+      .catch((e) => { setBusy(false); flash('ยกเลิกไม่สำเร็จ: ' + e.message) })
+  }
+
+  const retryPay = (p, simulate) => {
+    setBusy(true)
+    setReconcile(null)
+    api.retryEdc(id, p.id, simulate)
+      .then((d) => { setT(d); setBusy(false); flash('รูดบัตรใหม่สำเร็จ') })
+      .catch((e) => {
+        setBusy(false)
+        if (e.status === 409 && e.body && e.body.error === 'idempotency_key_expired') {
+          setReconcile(p.id)
+          flash('คีย์หมดอายุ (>12 ชม.) — ต้อง reconcile เอง')
+        } else {
+          flash('รูดบัตรใหม่ไม่สำเร็จ: ' + e.message)
+        }
+      })
+  }
 
   useEffect(() => {
     api.ticket(id).then(setT).catch(() => flash('โหลดบิลไม่สำเร็จ'))
@@ -634,16 +713,41 @@ function TicketView({ id, flash, onClosed }) {
 
           {payments.length > 0 && (
             <div style={{ marginBottom: 12 }}>
-              {payments.map((p) => (
-                <div className="li" key={p.id}>
-                  <div className="grow">
-                    <div className="name">{payMethodTH(p.method)} #{p.payment_seq}</div>
-                    <div className="meta">{fmtDate(p.created_at)}</div>
+              {payments.map((p) => {
+                const st = p.status || 'pending'
+                const isVoided = st === 'voided'
+                const canRetry = p.method === 'beam_edc' && (st === 'pending' || st === 'failed')
+                return (
+                  <div key={p.id}>
+                    <div className="li">
+                      <div className="grow">
+                        <div className="name" style={isVoided ? { textDecoration: 'line-through', color: 'var(--muted)' } : undefined}>{payMethodTH(p.method)} #{p.payment_seq}</div>
+                        <div className="meta">{fmtDate(p.created_at)}</div>
+                      </div>
+                      {isVoided ? (
+                        <span className="badge closed">ยกเลิกแล้ว</span>
+                      ) : (
+                        <span className={'badge ' + st}>{st}</span>
+                      )}
+                      <div className="price" style={{ marginLeft: 8 }}>{baht(p.amount)}</div>
+                    </div>
+                    {!isVoided && (
+                      <div className="btn-row" style={{ marginTop: 6 }}>
+                        {canRetry && (
+                          <button className="btn secondary" style={{ width: 'auto', padding: '8px 14px' }} disabled={busy} onClick={() => retryPay(p)}>🔁 ลองรูดอีกครั้ง</button>
+                        )}
+                        <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} disabled={busy} onClick={() => voidPay(p)}>ยกเลิก</button>
+                      </div>
+                    )}
+                    {reconcile === p.id && (
+                      <div className="card" style={{ marginTop: 6, borderColor: 'var(--bad)' }}>
+                        <div style={{ color: 'var(--bad)', fontWeight: 700 }}>⚠️ คีย์หมดอายุ (&gt;12 ชม.)</div>
+                        <div className="meta" style={{ marginTop: 4 }}>ต้อง reconcile เอง — ตรวจสอบกับเครื่อง EDC/ธนาคารก่อนทำรายการใหม่</div>
+                      </div>
+                    )}
                   </div>
-                  <span className={'badge ' + (p.status || 'pending')}>{p.status || 'pending'}</span>
-                  <div className="price" style={{ marginLeft: 8 }}>{baht(p.amount)}</div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
 

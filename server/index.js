@@ -4,9 +4,20 @@ import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { createBeamAdapter } from './adapters/beam.js';
+import { createLineAdapter } from './adapters/line.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 8080;
+
+// Swappable integration adapters — instantiated once from env at startup.
+// Mock now, real later, WITHOUT changing core endpoint logic.
+const beamAdapter = createBeamAdapter(process.env);
+const lineAdapter = createLineAdapter(process.env);
+
+// §4 INVARIANT 2: idempotency key may only be reused for retries within this
+// window. Beyond it, the key is considered expired → no retry, manual reconcile.
+const IDEMPOTENCY_REUSE_WINDOW_MS = 12 * 60 * 60 * 1000; // 12 hours
 const { Pool } = pg;
 const pool = new Pool({
   connectionString:
@@ -83,7 +94,15 @@ app.get('/api/services', async (_req, res) => {
   res.json((await q('SELECT * FROM service WHERE active ORDER BY category, name')).rows);
 });
 
-app.get('/api/members', async (_req, res) => {
+app.get('/api/members', async (req, res) => {
+  const term = (req.query.q || '').trim();
+  if (term) {
+    const rows = (await q(
+      `SELECT * FROM member
+        WHERE name ILIKE $1 OR phone ILIKE $1
+        ORDER BY joined_at DESC`, [`%${term}%`])).rows;
+    return res.json(rows);
+  }
   res.json((await q('SELECT * FROM member ORDER BY joined_at DESC')).rows);
 });
 
@@ -94,6 +113,23 @@ app.post('/api/members', async (req, res) => {
     `INSERT INTO member (store_id, name, phone, line_user_id, notes)
      VALUES (1,$1,$2,$3,$4) RETURNING *`,
     [name, phone || null, line_user_id || null, notes || null])).rows[0];
+  res.json(m);
+});
+
+app.put('/api/members/:id', async (req, res) => {
+  const existing = (await q('SELECT * FROM member WHERE id=$1', [req.params.id])).rows[0];
+  if (!existing) return res.status(400).json({ error: 'member not found' });
+  const { name, phone, line_user_id, notes } = req.body;
+  const next = {
+    name: name === undefined ? existing.name : name,
+    phone: phone === undefined ? existing.phone : phone,
+    line_user_id: line_user_id === undefined ? existing.line_user_id : line_user_id,
+    notes: notes === undefined ? existing.notes : notes,
+  };
+  const m = (await q(
+    `UPDATE member SET name=$2, phone=$3, line_user_id=$4, notes=$5
+      WHERE id=$1 RETURNING *`,
+    [req.params.id, next.name, next.phone, next.line_user_id, next.notes])).rows[0];
   res.json(m);
 });
 
@@ -158,7 +194,11 @@ app.delete('/api/tickets/:id/items/:itemId', async (req, res) => {
 app.post('/api/tickets/:id/quote/send', async (req, res) => {
   const d = await ticketDetail(req.params.id);
   if (!d) return res.status(404).json({ error: 'not found' });
-  const msgId = 'line_' + randomUUID().slice(0, 8);
+  const { lineMsgId: msgId } = await lineAdapter.pushQuote({
+    lineUserId: d.member?.line_user_id || null,
+    ticketId: req.params.id,
+    quotedTotal: d.total,
+  });
   const qc = (await q(
     `INSERT INTO quote_confirm (ticket_id, channel, quoted_total, sent_at, line_msg_id)
      VALUES ($1,'line',$2, now(), $3) RETURNING *`,
@@ -190,11 +230,16 @@ app.post('/api/tickets/:id/payments', async (req, res) => {
       `INSERT INTO payment (ticket_id, payment_seq, method, amount, beam_idempotency_key, status)
        VALUES ($1,$2,'beam_edc',$3,$4,'pending') RETURNING *`,
       [req.params.id, seq, amount, key])).rows[0];
-    // simulate Beam Bolt deep-link + Charges API result
-    const ok = simulate !== 'fail';
+    // INVARIANT 1 satisfied: row durable. Now call Beam via adapter.
+    const result = await beamAdapter.charge({
+      idempotencyKey: key,
+      amount,
+      ticketId: req.params.id,
+      simulate,
+    });
     await q(
       `UPDATE payment SET status=$2, beam_charge_id=$3 WHERE id=$1`,
-      [p.id, ok ? 'success' : 'failed', ok ? 'beam_' + key.slice(0, 12) : null]);
+      [p.id, result.status, result.beamChargeId || null]);
   } else if (method === 'cash') {
     await q(
       `INSERT INTO payment (ticket_id, payment_seq, method, amount, status)
@@ -204,6 +249,50 @@ app.post('/api/tickets/:id/payments', async (req, res) => {
       `INSERT INTO payment (ticket_id, payment_seq, method, amount, status)
        VALUES ($1,$2,'unpaid',$3,'pending')`, [req.params.id, seq, amount]);
   }
+  res.json(await ticketDetail(req.params.id));
+});
+
+// §4 INVARIANT 2 — retry an existing beam_edc payment reusing its stored key.
+// Within 12h: idempotent re-charge with SAME key. Beyond 12h: key expired,
+// mark failed, return 409 needs_reconcile (manual). Pure logic — mock Beam.
+app.post('/api/tickets/:id/payments/:pid/retry', async (req, res) => {
+  const { simulate } = req.body || {};
+  const p = (await q(
+    'SELECT * FROM payment WHERE id=$1 AND ticket_id=$2',
+    [req.params.pid, req.params.id])).rows[0];
+  if (!p) return res.status(404).json({ error: 'payment not found' });
+  if (p.method !== 'beam_edc')
+    return res.status(400).json({ error: 'not a beam_edc payment' });
+  if (!['pending', 'failed'].includes(p.status))
+    return res.status(409).json({ error: 'payment not retryable', status: p.status });
+  if (!p.beam_idempotency_key)
+    return res.status(409).json({ error: 'no idempotency key on payment' });
+
+  const ageMs = Date.now() - new Date(p.created_at).getTime();
+  if (ageMs > IDEMPOTENCY_REUSE_WINDOW_MS) {
+    // INVARIANT 2: key too old to reuse safely → do NOT call Beam.
+    await q(`UPDATE payment SET status='failed' WHERE id=$1`, [p.id]);
+    return res.status(409).json({ error: 'idempotency_key_expired', needs_reconcile: true });
+  }
+
+  // Within 12h → re-call Beam with the SAME stored key (idempotent).
+  const result = await beamAdapter.charge({
+    idempotencyKey: p.beam_idempotency_key,
+    amount: p.amount,
+    ticketId: req.params.id,
+    simulate,
+  });
+  await q(
+    `UPDATE payment SET status=$2, beam_charge_id=$3 WHERE id=$1`,
+    [p.id, result.status, result.beamChargeId || null]);
+  res.json(await ticketDetail(req.params.id));
+});
+
+// Void a payment (§3 'voided' enum). Safe on pending/success/failed.
+app.post('/api/tickets/:id/payments/:pid/void', async (req, res) => {
+  await q(
+    `UPDATE payment SET status='voided' WHERE id=$1 AND ticket_id=$2`,
+    [req.params.pid, req.params.id]);
   res.json(await ticketDetail(req.params.id));
 });
 

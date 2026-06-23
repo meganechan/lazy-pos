@@ -18,7 +18,13 @@ Mobile-first (iPhone 390×844 @3x), captured from the live Docker build.
 | 12 | `12-edc-success.png` | EDC success (after retry) — paid in full |
 | 13 | `13-unpaid.png` | ค้างชำระ (unpaid) — close still allowed |
 | 14 | `14-receipt-closed.png` | Receipt + closed ticket |
+| 15 | `15-member-search.png` | Member search (filter by name/phone) |
+| 16 | `16-edit-member.png` | Edit member (prefilled form) |
+| 17 | `17-void-payment.png` | Void payment (row shows ยกเลิกแล้ว) |
+| 18 | `18-edc-12h-reconcile.png` | EDC retry blocked >12h → manual reconcile (§4 INVARIANT 2) |
 
 > Payment is decoupled from closing the sale (spec §1): EDC failure offers
 > cash / unpaid fallback so a ticket never gets stuck. Beam & LINE are mocked
-> (no real credentials) — the flow is what matters here.
+> behind swappable adapters (`server/adapters/`) — no real credentials.
+> §4 INVARIANT 2: a beam_edc key older than 12h is never reused — the charge is
+> marked failed and flagged for manual reconcile (screenshot 18).
