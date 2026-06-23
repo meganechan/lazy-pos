@@ -118,3 +118,10 @@ CREATE TABLE IF NOT EXISTS service_option (
   minute_delta INTEGER DEFAULT 0,
   active       BOOLEAN NOT NULL DEFAULT TRUE
 );
+
+-- §Beam Bolt PoC — per-store device pairing for the PAIRING (physical EDC) mode.
+-- A store pairs once (POST /api/bolt/pair with a pairing code shown on the EDC),
+-- storing the Bolt connection + device ids. Idempotent — bootstrap() runs this
+-- file every startup.
+ALTER TABLE store ADD COLUMN IF NOT EXISTS bolt_connection_id TEXT;
+ALTER TABLE store ADD COLUMN IF NOT EXISTS bolt_device_id TEXT;

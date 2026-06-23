@@ -137,6 +137,21 @@ export const api = {
   pay: (id, body) => j(`/api/tickets/${id}/payments`, { method: 'POST', body: JSON.stringify(body) }),
   voidPayment: (ticketId, pid) => j(`/api/tickets/${ticketId}/payments/${pid}/void`, { method: 'POST' }),
   retryEdc: (ticketId, pid, simulate) => j(`/api/tickets/${ticketId}/payments/${pid}/retry`, { method: 'POST', body: JSON.stringify(simulate ? { simulate } : {}) }),
+
+  /* ── Beam Bolt device pairing (owner) ──
+     pairBolt: send the 8-char code shown on the EDC device → links it to this shop.
+     boltConnection: read this shop's current pairing status. */
+  pairBolt: (pairingCode) => j('/api/bolt/pair', { method: 'POST', body: JSON.stringify({ pairingCode }) }),
+  boltConnection: () => j('/api/bolt/connection'),
+
+  /* ── Beam Bolt intent (PoC) ──
+     create a pending beam_edc payment + a Beam Bolt intent, then poll its result.
+     body carries { mode, amount }: mode = PAIRING (รูดบัตรที่เครื่อง EDC) or
+     DEEP_LINK (QR PromptPay). Server defaults to PAIRING when the shop is paired
+     else DEEP_LINK. pollBoltIntent appends ?simulate= only when supplied (mock demo). */
+  createBoltIntent: (ticketId, body) => j(`/api/tickets/${ticketId}/bolt-intent`, { method: 'POST', body: JSON.stringify(body || {}) }),
+  pollBoltIntent: (ticketId, pid, simulate) => j(`/api/tickets/${ticketId}/bolt-intent/${pid}` + (simulate ? '?simulate=' + encodeURIComponent(simulate) : '')),
+
   close: (id) => j(`/api/tickets/${id}/close`, { method: 'POST' }),
 }
 
