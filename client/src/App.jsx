@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react'
-import { api, baht } from './api'
+import { api, baht, getToken, getUser, setAuth, clearAuth } from './api'
 
 const N = (v) => Number(v || 0)
+
+const roleTH = { owner: 'เจ้าของร้าน', staff: 'พนักงาน' }
 
 // status -> Thai label
 const statusTH = {
@@ -12,14 +14,39 @@ const statusTH = {
 }
 
 export default function App() {
-  const [tab, setTab] = useState('dashboard') // dashboard | members | services | tickets
-  const [view, setView] = useState(null) // null | {kind:'member',id} | {kind:'ticket',id} | {kind:'newTicket'} | {kind:'newMember'}
+  // auth gate: only treat as logged-in when both token + user exist
+  const [user, setUser] = useState(() => (getToken() ? getUser() : null))
+  const [tab, setTab] = useState('dashboard') // dashboard | members | services | tickets | users | audit
+  const [view, setView] = useState(null) // null | {kind:'member',id} | {kind:'ticket',id} | {kind:'newTicket'} | {kind:'newMember'} | {kind:'newUser'} | {kind:'editUser',u}
   const [toast, setToast] = useState(null)
 
   const flash = (msg) => {
     setToast(msg)
     setTimeout(() => setToast(null), 2200)
   }
+
+  const onLoggedIn = (token, u) => {
+    setAuth(token, u)
+    setUser(u)
+    setTab('dashboard')
+    setView(null)
+  }
+
+  const doLogout = () => {
+    api.logout().catch(() => {}) // best-effort; clear locally regardless
+    clearAuth()
+    setUser(null)
+    setTab('dashboard')
+    setView(null)
+  }
+
+  // not authenticated → full-screen login
+  if (!user) {
+    return <Login onLoggedIn={onLoggedIn} />
+  }
+
+  const role = user.role
+  const isOwner = role === 'owner'
 
   const goTab = (t) => {
     setView(null)
@@ -39,10 +66,14 @@ export default function App() {
     else if (view.kind === 'newMember') { title = 'เพิ่มสมาชิก'; sub = 'New member' }
     else if (view.kind === 'newTicket') { title = 'เปิดบิลใหม่'; sub = 'New ticket' }
     else if (view.kind === 'ticket') { title = 'บิล / เช็คเอาท์'; sub = 'Ticket #' + view.id }
+    else if (view.kind === 'newUser') { title = 'เพิ่มผู้ใช้'; sub = 'New user' }
+    else if (view.kind === 'editUser') { title = 'แก้ไขผู้ใช้'; sub = 'Edit user' }
   } else {
     if (tab === 'members') { title = 'สมาชิก'; sub = 'Members' }
     else if (tab === 'services') { title = 'บริการ'; sub = 'Services' }
     else if (tab === 'tickets') { title = 'บิลทั้งหมด'; sub = 'Tickets' }
+    else if (tab === 'users') { title = 'จัดการผู้ใช้'; sub = 'Users' }
+    else if (tab === 'audit') { title = 'บันทึกกิจกรรม'; sub = 'Audit log' }
   }
 
   // which tabs get a FAB (new ticket)
@@ -60,6 +91,13 @@ export default function App() {
           <h1>{title}</h1>
           <div className="sub">{sub}</div>
         </div>
+        <div className="userchip">
+          <div className="who">
+            <div className="uname">{user.name}</div>
+            <div className="urole">{roleTH[role] || role}</div>
+          </div>
+          <button className="logout" onClick={doLogout} title="ออกจากระบบ">⎋</button>
+        </div>
       </div>
 
       <div className="content">
@@ -70,15 +108,23 @@ export default function App() {
             <NewMember flash={flash} onDone={() => { setView(null); setTab('members') }} />
           ) : view.kind === 'newTicket' ? (
             <NewTicket flash={flash} preMember={view.preMember} onCreated={(t) => setView({ kind: 'ticket', id: t.id })} />
+          ) : view.kind === 'newUser' ? (
+            <UserForm flash={flash} onDone={() => { setView(null); setTab('users') }} onCancel={() => setView(null)} />
+          ) : view.kind === 'editUser' ? (
+            <UserForm flash={flash} u={view.u} onDone={() => { setView(null); setTab('users') }} onCancel={() => setView(null)} />
           ) : (
-            <TicketView id={view.id} flash={flash} onClosed={() => goTab('tickets')} />
+            <TicketView id={view.id} flash={flash} isOwner={isOwner} onClosed={() => goTab('tickets')} />
           )
         ) : tab === 'dashboard' ? (
           <Dashboard flash={flash} openTicket={openTicket} onNewTicket={() => setView({ kind: 'newTicket' })} onNewMember={() => setView({ kind: 'newMember' })} />
         ) : tab === 'members' ? (
           <Members openMember={openMember} onNewMember={() => setView({ kind: 'newMember' })} />
         ) : tab === 'services' ? (
-          <Services />
+          <Services flash={flash} isOwner={isOwner} />
+        ) : tab === 'users' && isOwner ? (
+          <Users flash={flash} onNewUser={() => setView({ kind: 'newUser' })} onEditUser={(u) => setView({ kind: 'editUser', u })} />
+        ) : tab === 'audit' && isOwner ? (
+          <AuditLog flash={flash} />
         ) : (
           <Tickets openTicket={openTicket} />
         )}
@@ -102,6 +148,16 @@ export default function App() {
           <button className={tab === 'tickets' ? 'active' : ''} onClick={() => goTab('tickets')}>
             <span className="tico">🧾</span>บิล
           </button>
+          {isOwner && (
+            <button className={tab === 'users' ? 'active' : ''} onClick={() => goTab('users')}>
+              <span className="tico">🔑</span>ผู้ใช้
+            </button>
+          )}
+          {isOwner && (
+            <button className={tab === 'audit' ? 'active' : ''} onClick={() => goTab('audit')}>
+              <span className="tico">📜</span>บันทึก
+            </button>
+          )}
         </div>
       )}
 
@@ -344,14 +400,35 @@ function EditMember({ m, flash, onSaved, onCancel }) {
 }
 
 /* ───────────────────────── Services ───────────────────────── */
-function Services() {
+function Services({ flash, isOwner }) {
   const [list, setList] = useState(null)
-  useEffect(() => {
-    api.services().then(setList).catch(() => setList([]))
-  }, [])
+  const [edits, setEdits] = useState({}) // serviceId -> string price
+  const [busy, setBusy] = useState(false)
+
+  const load = () => api.services().then(setList).catch(() => setList([]))
+  useEffect(() => { load() }, [])
 
   if (!list) return <Loading />
   if (list.length === 0) return <div className="empty"><div className="big">💅</div>ยังไม่มีบริการ</div>
+
+  const commitPrice = (s) => {
+    const raw = edits[s.id]
+    if (raw === undefined) return
+    const newPrice = N(raw)
+    if (newPrice === N(s.base_price)) {
+      setEdits((p) => { const c = { ...p }; delete c[s.id]; return c })
+      return
+    }
+    setBusy(true)
+    api.updateService(s.id, { base_price: newPrice })
+      .then(() => load())
+      .then(() => {
+        setBusy(false)
+        setEdits((p) => { const c = { ...p }; delete c[s.id]; return c })
+        flash && flash('แก้ราคาแล้ว')
+      })
+      .catch((e) => { setBusy(false); flash && flash(e.status === 403 ? e.message : 'แก้ราคาไม่สำเร็จ: ' + e.message) })
+  }
 
   const cats = groupByCat(list)
 
@@ -361,12 +438,30 @@ function Services() {
         <div key={cat}>
           <div className="section-title">{cat}</div>
           {cats[cat].map((s) => (
-            <div className="svc" key={s.id}>
+            <div className="svc" key={s.id} style={isOwner ? { flexWrap: 'wrap' } : undefined}>
               <div className="grow">
                 <span className="name" style={{ fontWeight: 600 }}>{s.name}</span>
                 <div className="meta" style={{ fontSize: 13, color: 'var(--muted)' }}>{N(s.duration_min)} นาที</div>
               </div>
-              <div className="price">{baht(s.base_price)}</div>
+              {isOwner ? (
+                <div className="row" style={{ width: '100%', marginTop: 8 }}>
+                  <input
+                    type="number"
+                    value={edits[s.id] !== undefined ? edits[s.id] : String(N(s.base_price))}
+                    onChange={(e) => setEdits((p) => ({ ...p, [s.id]: e.target.value }))}
+                  />
+                  <button
+                    className="btn secondary"
+                    style={{ width: 'auto', padding: '8px 14px' }}
+                    disabled={busy || edits[s.id] === undefined}
+                    onClick={() => commitPrice(s)}
+                  >
+                    แก้ราคา
+                  </button>
+                </div>
+              ) : (
+                <div className="price">{baht(s.base_price)}</div>
+              )}
             </div>
           ))}
         </div>
@@ -442,7 +537,7 @@ function NewTicket({ flash, preMember, onCreated }) {
 }
 
 /* ───────────────────────── Ticket / checkout ───────────────────────── */
-function TicketView({ id, flash, onClosed }) {
+function TicketView({ id, flash, isOwner, onClosed }) {
   const [t, setT] = useState(null)
   const [services, setServices] = useState([])
   const [busy, setBusy] = useState(false)
@@ -731,12 +826,14 @@ function TicketView({ id, flash, onClosed }) {
                       )}
                       <div className="price" style={{ marginLeft: 8 }}>{baht(p.amount)}</div>
                     </div>
-                    {!isVoided && (
+                    {!isVoided && (canRetry || isOwner) && (
                       <div className="btn-row" style={{ marginTop: 6 }}>
                         {canRetry && (
                           <button className="btn secondary" style={{ width: 'auto', padding: '8px 14px' }} disabled={busy} onClick={() => retryPay(p)}>🔁 ลองรูดอีกครั้ง</button>
                         )}
-                        <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} disabled={busy} onClick={() => voidPay(p)}>ยกเลิก</button>
+                        {isOwner && (
+                          <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} disabled={busy} onClick={() => voidPay(p)}>ยกเลิก</button>
+                        )}
                       </div>
                     )}
                     {reconcile === p.id && (
@@ -852,6 +949,276 @@ function Receipt({ t }) {
       </div>
       <div className="spacer" />
       <div className="center muted">บิลนี้ปิดแล้ว <span className="badge closed">ปิดบิล</span></div>
+    </>
+  )
+}
+
+/* ───────────────────────── Login + PIN pad ───────────────────────── */
+function RoleBadge({ role }) {
+  const cls = role === 'owner' ? 'role-owner' : 'role-staff'
+  return <span className={'badge rolebadge ' + cls}>{roleTH[role] || role}</span>
+}
+
+function Login({ onLoggedIn }) {
+  const [users, setUsers] = useState(null)
+  const [picked, setPicked] = useState(null) // selected user {id,name,role}
+  const [pin, setPin] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+
+  useEffect(() => {
+    api.authUsers().then(setUsers).catch(() => setUsers([]))
+  }, [])
+
+  const press = (d) => {
+    setErr('')
+    setPin((p) => (p.length >= 6 ? p : p + d))
+  }
+  const back = () => { setErr(''); setPin((p) => p.slice(0, -1)) }
+
+  const submit = () => {
+    if (!picked || pin.length < 4) return
+    setBusy(true)
+    setErr('')
+    api.login(picked.id, pin)
+      .then((res) => { setBusy(false); onLoggedIn(res.token, res.user) })
+      .catch((e) => {
+        setBusy(false)
+        setPin('')
+        setErr(e.status === 401 ? 'PIN ไม่ถูกต้อง' : 'เข้าสู่ระบบไม่สำเร็จ')
+      })
+  }
+
+  return (
+    <div className="login">
+      <div className="login-head">
+        <div className="login-logo">💅</div>
+        <h1>Lazy Nail POS</h1>
+        <div className="sub">เลือกผู้ใช้แล้วใส่ PIN เพื่อเข้าสู่ระบบ</div>
+      </div>
+
+      {!picked ? (
+        <div className="login-body">
+          <div className="section-title">เลือกผู้ใช้</div>
+          {!users ? (
+            <Loading />
+          ) : users.length === 0 ? (
+            <div className="empty"><div className="big">🔒</div>ยังไม่มีผู้ใช้</div>
+          ) : (
+            users.map((u) => (
+              <div className="li" key={u.id} onClick={() => { setPicked(u); setPin(''); setErr('') }}>
+                <div className="avatar">{(u.name || '?').charAt(0).toUpperCase()}</div>
+                <div className="grow">
+                  <div className="name">{u.name}</div>
+                  <div className="meta"><RoleBadge role={u.role} /></div>
+                </div>
+                <span className="chev">›</span>
+              </div>
+            ))
+          )}
+        </div>
+      ) : (
+        <div className="login-body">
+          <div className="li" style={{ marginBottom: 14 }}>
+            <div className="avatar">{(picked.name || '?').charAt(0).toUpperCase()}</div>
+            <div className="grow">
+              <div className="name">{picked.name}</div>
+              <div className="meta"><RoleBadge role={picked.role} /></div>
+            </div>
+            <button className="btn ghost" style={{ width: 'auto', padding: '8px 12px' }} onClick={() => { setPicked(null); setPin(''); setErr('') }}>เปลี่ยน</button>
+          </div>
+
+          <div className="pin-dots">
+            {[0, 1, 2, 3, 4, 5].map((i) => (
+              <span key={i} className={'pin-dot' + (i < pin.length ? ' filled' : '')} />
+            ))}
+          </div>
+
+          {err && <div className="pin-err">{err}</div>}
+
+          <div className="pinpad">
+            {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((d) => (
+              <button key={d} className="pinkey" disabled={busy} onClick={() => press(d)}>{d}</button>
+            ))}
+            <button className="pinkey ghost" disabled={busy || pin.length === 0} onClick={back}>⌫</button>
+            <button className="pinkey" disabled={busy} onClick={() => press('0')}>0</button>
+            <button className="pinkey ok" disabled={busy || pin.length < 4} onClick={submit}>{busy ? '…' : '✓'}</button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ───────────────────────── Users (owner) ───────────────────────── */
+function Users({ flash, onNewUser, onEditUser }) {
+  const [list, setList] = useState(null)
+
+  const load = () => api.users().then(setList).catch((e) => { setList([]); flash && flash(e.status === 403 ? e.message : 'โหลดผู้ใช้ไม่สำเร็จ') })
+  useEffect(() => { load() }, [])
+
+  return (
+    <>
+      <button className="btn" onClick={onNewUser}>➕ เพิ่มผู้ใช้ใหม่</button>
+      <div className="spacer" />
+      {!list ? (
+        <Loading />
+      ) : list.length === 0 ? (
+        <div className="empty"><div className="big">🔑</div>ยังไม่มีผู้ใช้</div>
+      ) : (
+        list.map((u) => (
+          <div className="li" key={u.id} onClick={() => onEditUser(u)}>
+            <div className="avatar">{(u.name || '?').charAt(0).toUpperCase()}</div>
+            <div className="grow">
+              <div className="name" style={u.active === false ? { color: 'var(--muted)', textDecoration: 'line-through' } : undefined}>{u.name}</div>
+              <div className="meta">
+                <RoleBadge role={u.role} />{' '}
+                {u.active === false ? <span className="badge closed">ปิดใช้งาน</span> : <span className="badge done">ใช้งานอยู่</span>}
+              </div>
+            </div>
+            <span className="chev">›</span>
+          </div>
+        ))
+      )}
+    </>
+  )
+}
+
+function UserForm({ flash, u, onDone, onCancel }) {
+  const editing = !!u
+  const [name, setName] = useState(u ? (u.name || '') : '')
+  const [role, setRole] = useState(u ? (u.role || 'staff') : 'staff')
+  const [pin, setPin] = useState('')
+  const [active, setActive] = useState(u ? u.active !== false : true)
+  const [saving, setSaving] = useState(false)
+
+  const save = () => {
+    if (!name.trim()) { flash('กรุณากรอกชื่อ'); return }
+    if (!editing && !/^\d{4,6}$/.test(pin)) { flash('PIN ต้องเป็นตัวเลข 4–6 หลัก'); return }
+    if (editing && pin && !/^\d{4,6}$/.test(pin)) { flash('PIN ต้องเป็นตัวเลข 4–6 หลัก'); return }
+
+    setSaving(true)
+    if (editing) {
+      const body = { name: name.trim(), role, active }
+      if (pin) body.pin = pin
+      api.updateUser(u.id, body)
+        .then(() => { flash('บันทึกการแก้ไขแล้ว'); onDone() })
+        .catch((e) => { setSaving(false); flash(e.status === 403 ? e.message : 'ผิดพลาด: ' + e.message) })
+    } else {
+      api.addUser({ name: name.trim(), role, pin })
+        .then(() => { flash('เพิ่มผู้ใช้สำเร็จ'); onDone() })
+        .catch((e) => { setSaving(false); flash(e.status === 403 ? e.message : 'ผิดพลาด: ' + e.message) })
+    }
+  }
+
+  return (
+    <div className="card">
+      <label>ชื่อ *</label>
+      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อผู้ใช้" />
+
+      <label>บทบาท (Role)</label>
+      <select value={role} onChange={(e) => setRole(e.target.value)}>
+        <option value="owner">เจ้าของร้าน (owner)</option>
+        <option value="staff">พนักงาน (staff)</option>
+      </select>
+
+      <label>{editing ? 'PIN ใหม่ (เว้นว่าง = ไม่เปลี่ยน)' : 'PIN (4–6 หลัก) *'}</label>
+      <input
+        type="tel"
+        inputMode="numeric"
+        value={pin}
+        onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+        placeholder="••••"
+      />
+
+      {editing && (
+        <>
+          <label>สถานะ</label>
+          <div className="btn-row" style={{ marginTop: 0 }}>
+            <button className={'btn ' + (active ? '' : 'ghost')} onClick={() => setActive(true)}>ใช้งานอยู่</button>
+            <button className={'btn ' + (!active ? 'dark' : 'ghost')} onClick={() => setActive(false)}>ปิดใช้งาน</button>
+          </div>
+        </>
+      )}
+
+      <div className="btn-row">
+        <button className="btn ghost" disabled={saving} onClick={onCancel}>ยกเลิก</button>
+        <button className="btn" disabled={saving} onClick={save}>{saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
+      </div>
+    </div>
+  )
+}
+
+/* ───────────────────────── Audit log (owner) ───────────────────────── */
+const AUDIT_FILTERS = [
+  { v: '', l: 'ทั้งหมด' },
+  { v: 'login', l: 'เข้าสู่ระบบ' },
+  { v: 'payment_void', l: 'ยกเลิกชำระ' },
+  { v: 'ticket_close', l: 'ปิดบิล' },
+  { v: 'user_', l: 'ผู้ใช้' },
+  { v: 'service_price_change', l: 'แก้ราคา' },
+]
+
+function auditActionTH(a) {
+  const map = {
+    login: 'เข้าสู่ระบบ',
+    payment_void: 'ยกเลิกการชำระ',
+    ticket_close: 'ปิดบิล',
+    user_create: 'เพิ่มผู้ใช้',
+    user_update: 'แก้ไขผู้ใช้',
+    user_deactivate: 'ปิดใช้งานผู้ใช้',
+    service_price_change: 'แก้ราคาบริการ',
+  }
+  return map[a] || a
+}
+
+function AuditLog({ flash }) {
+  const [list, setList] = useState(null)
+  const [filter, setFilter] = useState('')
+
+  useEffect(() => {
+    setList(null)
+    // user_ filter is a prefix; backend can match exact action — send `action`
+    const params = filter ? { action: filter } : undefined
+    api.audit(params).then(setList).catch((e) => { setList([]); flash && flash(e.status === 403 ? e.message : 'โหลดบันทึกไม่สำเร็จ') })
+  }, [filter])
+
+  return (
+    <>
+      <div className="audit-filters">
+        {AUDIT_FILTERS.map((f) => (
+          <button
+            key={f.v || 'all'}
+            className={'chip' + (filter === f.v ? ' active' : '')}
+            onClick={() => setFilter(f.v)}
+          >
+            {f.l}
+          </button>
+        ))}
+      </div>
+
+      {!list ? (
+        <Loading />
+      ) : list.length === 0 ? (
+        <div className="empty"><div className="big">📜</div>ไม่มีบันทึกกิจกรรม</div>
+      ) : (
+        <div className="timeline">
+          {list.map((r) => (
+            <div className="tl-row" key={r.id}>
+              <div className="tl-dot" />
+              <div className="tl-body">
+                <div className="name">
+                  {auditActionTH(r.action)}
+                  {(r.entity || r.entity_id) && (
+                    <span className="meta"> · {r.entity || ''}{r.entity_id ? ' #' + r.entity_id : ''}</span>
+                  )}
+                </div>
+                <div className="meta">โดย {r.actor_name || '-'} · {fmtDate(r.created_at)}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </>
   )
 }

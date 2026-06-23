@@ -6,6 +6,13 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { createBeamAdapter } from './adapters/beam.js';
 import { createLineAdapter } from './adapters/line.js';
+import {
+  hashPin,
+  verifyPin,
+  createSession,
+  getSession,
+  destroySession,
+} from './auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 8080;
@@ -37,6 +44,19 @@ async function bootstrap() {
     await q(seed);
     console.log('[bootstrap] seeded demo data');
   }
+  // Demo users seeded from JS (not seed.sql) because PIN hashing lives in JS.
+  // PINs are stored scrypt-hashed — never log the raw PINs.
+  const { rows: userRows } = await q('SELECT count(*)::int AS n FROM app_user');
+  if (userRows[0].n === 0) {
+    await q(
+      `INSERT INTO app_user (store_id, name, role, pin_hash)
+       VALUES (1,$1,'owner',$2),(1,$3,'staff',$4)`,
+      [
+        'เจ้าของร้าน (Owner)', hashPin('1234'),
+        'พนักงาน (Staff)', hashPin('5678'),
+      ]);
+    console.log('[bootstrap] seeded demo users (owner + staff) with hashed PINs');
+  }
   console.log('[bootstrap] schema ready');
 }
 
@@ -49,6 +69,27 @@ async function withRetry(fn, tries = 30) {
     }
   }
   throw new Error('database never became ready');
+}
+
+// ---- audit helper ----
+// Inserts an audit_log row. Wrapped so an audit failure NEVER breaks the
+// main request (best-effort logging).
+async function audit(actorUserId, storeId, action, entity, entityId, detail) {
+  try {
+    await q(
+      `INSERT INTO audit_log (store_id, actor_user_id, action, entity, entity_id, detail)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [
+        storeId ?? null,
+        actorUserId ?? null,
+        action,
+        entity ?? null,
+        entityId == null ? null : String(entityId),
+        detail == null ? null : JSON.stringify(detail),
+      ]);
+  } catch (e) {
+    console.error('[audit] failed to write audit row:', e.message);
+  }
 }
 
 // ---- helpers ----
@@ -75,8 +116,130 @@ async function ticketDetail(id) {
 const app = express();
 app.use(express.json());
 
-// ---- API ----
+// ---- auth middleware ----
+// requireAuth: resolve Bearer token → req.user. Missing/invalid → 401.
+function requireAuth(req, res, next) {
+  const header = req.headers['authorization'] || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : null;
+  const session = getSession(token);
+  if (!session) return res.status(401).json({ error: 'unauthorized' });
+  req.user = {
+    id: session.userId,
+    name: session.name,
+    role: session.role,
+    storeId: session.storeId,
+    token,
+  };
+  next();
+}
+
+// requireOwner: must already be authed; owner role only, else 403.
+function requireOwner(req, res, next) {
+  if (!req.user || req.user.role !== 'owner')
+    return res.status(403).json({ error: 'forbidden' });
+  next();
+}
+
+// ---- PUBLIC API (no token) ----
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
+
+// Login picker — active users only, minimal shape.
+app.get('/api/auth/users', async (_req, res) => {
+  const rows = (await q(
+    'SELECT id, name, role FROM app_user WHERE active ORDER BY role, name')).rows;
+  res.json(rows);
+});
+
+// Login — verify PIN, issue session token. Audits 'login' on success.
+app.post('/api/auth/login', async (req, res) => {
+  const { userId, pin } = req.body || {};
+  if (userId == null || pin == null)
+    return res.status(401).json({ error: 'invalid_credentials' });
+  const user = (await q(
+    'SELECT * FROM app_user WHERE id=$1 AND active', [userId])).rows[0];
+  if (!user || !verifyPin(pin, user.pin_hash))
+    return res.status(401).json({ error: 'invalid_credentials' });
+  const token = createSession(user);
+  await audit(user.id, user.store_id, 'login', 'app_user', user.id, null);
+  res.json({ token, user: { id: user.id, name: user.name, role: user.role } });
+});
+
+// ---- AUTH GATE: everything below /api/* requires a valid session ----
+app.use('/api', requireAuth);
+
+// Logout — destroy current session.
+app.post('/api/auth/logout', (req, res) => {
+  destroySession(req.user.token);
+  res.json({ ok: true });
+});
+
+// ---- OWNER-ONLY: user management ----
+app.get('/api/users', requireOwner, async (_req, res) => {
+  const rows = (await q(
+    `SELECT id, name, role, active, created_at FROM app_user
+      ORDER BY created_at, id`)).rows;
+  res.json(rows);
+});
+
+app.post('/api/users', requireOwner, async (req, res) => {
+  const { name, role, pin } = req.body || {};
+  if (!name || !role || pin == null)
+    return res.status(400).json({ error: 'name, role and pin required' });
+  if (!['owner', 'staff'].includes(role))
+    return res.status(400).json({ error: 'bad role' });
+  const u = (await q(
+    `INSERT INTO app_user (store_id, name, role, pin_hash)
+     VALUES ($1,$2,$3,$4)
+     RETURNING id, name, role, active, created_at`,
+    [req.user.storeId, name, role, hashPin(pin)])).rows[0];
+  await audit(req.user.id, req.user.storeId, 'user_create', 'app_user', u.id,
+    { name: u.name, role: u.role });
+  res.json(u);
+});
+
+app.put('/api/users/:id', requireOwner, async (req, res) => {
+  const existing = (await q('SELECT * FROM app_user WHERE id=$1', [req.params.id])).rows[0];
+  if (!existing) return res.status(404).json({ error: 'user not found' });
+  const { name, role, pin, active } = req.body || {};
+  if (role !== undefined && !['owner', 'staff'].includes(role))
+    return res.status(400).json({ error: 'bad role' });
+  const next = {
+    name: name === undefined ? existing.name : name,
+    role: role === undefined ? existing.role : role,
+    active: active === undefined ? existing.active : !!active,
+    pin_hash: pin === undefined || pin === null ? existing.pin_hash : hashPin(pin),
+  };
+  const u = (await q(
+    `UPDATE app_user SET name=$2, role=$3, active=$4, pin_hash=$5
+      WHERE id=$1
+      RETURNING id, name, role, active, created_at`,
+    [req.params.id, next.name, next.role, next.active, next.pin_hash])).rows[0];
+  // Deactivation is a distinct, security-relevant action.
+  const deactivated = existing.active === true && next.active === false;
+  await audit(
+    req.user.id, req.user.storeId,
+    deactivated ? 'user_deactivate' : 'user_update',
+    'app_user', u.id,
+    { name: u.name, role: u.role, active: u.active, pin_changed: pin !== undefined && pin !== null });
+  res.json(u);
+});
+
+// ---- OWNER-ONLY: audit log ----
+app.get('/api/audit', requireOwner, async (req, res) => {
+  const action = (req.query.action || '').trim();
+  const params = [];
+  let where = '';
+  if (action) { where = 'WHERE a.action = $1'; params.push(action); }
+  const rows = (await q(
+    `SELECT a.id, a.actor_user_id, u.name AS actor_name, a.action,
+            a.entity, a.entity_id, a.detail, a.created_at
+       FROM audit_log a
+       LEFT JOIN app_user u ON u.id = a.actor_user_id
+       ${where}
+      ORDER BY a.created_at DESC, a.id DESC
+      LIMIT 200`, params)).rows;
+  res.json(rows);
+});
 
 app.get('/api/summary', async (_req, res) => {
   const sales = (await q(
@@ -92,6 +255,27 @@ app.get('/api/summary', async (_req, res) => {
 
 app.get('/api/services', async (_req, res) => {
   res.json((await q('SELECT * FROM service WHERE active ORDER BY category, name')).rows);
+});
+
+// Service catalog edit (incl. price) — owner only. Audits price changes.
+app.put('/api/services/:id', requireOwner, async (req, res) => {
+  const existing = (await q('SELECT * FROM service WHERE id=$1', [req.params.id])).rows[0];
+  if (!existing) return res.status(404).json({ error: 'service not found' });
+  const { name, base_price, active } = req.body || {};
+  const next = {
+    name: name === undefined ? existing.name : name,
+    base_price: base_price === undefined ? existing.base_price : base_price,
+    active: active === undefined ? existing.active : !!active,
+  };
+  const s = (await q(
+    `UPDATE service SET name=$2, base_price=$3, active=$4
+      WHERE id=$1 RETURNING *`,
+    [req.params.id, next.name, next.base_price, next.active])).rows[0];
+  if (base_price !== undefined && Number(base_price) !== Number(existing.base_price)) {
+    await audit(req.user.id, req.user.storeId, 'service_price_change', 'service', s.id,
+      { old_price: Number(existing.base_price), new_price: Number(s.base_price) });
+  }
+  res.json(s);
 });
 
 app.get('/api/members', async (req, res) => {
@@ -289,15 +473,19 @@ app.post('/api/tickets/:id/payments/:pid/retry', async (req, res) => {
 });
 
 // Void a payment (§3 'voided' enum). Safe on pending/success/failed.
-app.post('/api/tickets/:id/payments/:pid/void', async (req, res) => {
+// OWNER ONLY (sensitive). Audits 'payment_void'.
+app.post('/api/tickets/:id/payments/:pid/void', requireOwner, async (req, res) => {
   await q(
     `UPDATE payment SET status='voided' WHERE id=$1 AND ticket_id=$2`,
     [req.params.pid, req.params.id]);
+  await audit(req.user.id, req.user.storeId, 'payment_void', 'payment', req.params.pid,
+    { ticket_id: req.params.id });
   res.json(await ticketDetail(req.params.id));
 });
 
 app.post('/api/tickets/:id/close', async (req, res) => {
   await q("UPDATE ticket SET status='closed', closed_at=now() WHERE id=$1", [req.params.id]);
+  await audit(req.user.id, req.user.storeId, 'ticket_close', 'ticket', req.params.id, null);
   res.json(await ticketDetail(req.params.id));
 });
 

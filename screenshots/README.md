@@ -1,6 +1,9 @@
 # Screenshots — Lazy Nails POS
 
 Mobile-first (iPhone 390×844 @3x), captured from the live Docker build.
+Theme: muted/professional (aubergine + desaturated mauve, off-white) — re-shot
+app-wide after the v0.4 redesign. RBAC requires login; 01–18 are shown logged in
+as **owner**.
 
 | # | File | Function |
 |---|------|----------|
@@ -22,7 +25,22 @@ Mobile-first (iPhone 390×844 @3x), captured from the live Docker build.
 | 16 | `16-edit-member.png` | Edit member (prefilled form) |
 | 17 | `17-void-payment.png` | Void payment (row shows ยกเลิกแล้ว) |
 | 18 | `18-edc-12h-reconcile.png` | EDC retry blocked >12h → manual reconcile (§4 INVARIANT 2) |
+| 19 | `19-login.png` | Login — user picker (PIN auth, v0.4) |
+| 20 | `20-login-pin.png` | Login — numeric PIN pad |
+| 21 | `21-users-list.png` | Users page (owner) — role + active badges |
+| 22 | `22-add-user.png` | Add user — name, role, PIN |
+| 23 | `23-edit-user.png` | Edit user — role / PIN / activate-deactivate |
+| 24 | `24-audit-log.png` | Audit log timeline (owner) + filter chips |
+| 25 | `25-staff-blocked.png` | Logged in as **staff** — no Users/Audit tabs (UI gated) |
+| 26 | `26-staff-no-void.png` | Staff ticket view — void button hidden (owner-only) |
 
+> **RBAC (v0.4)**: PIN login per user (scrypt-hashed — separate from the SACRED
+> idempotency hash), in-memory session token sent as `Authorization: Bearer`.
+> Roles owner/staff; **server enforces every endpoint** (sensitive = owner-only →
+> 403), UI gating is just UX. Demo PINs (demo-only, stored hashed): owner `1234`,
+> staff `5678`. Audit log records login, user CRUD, service price change, payment
+> void, ticket close.
+>
 > Payment is decoupled from closing the sale (spec §1): EDC failure offers
 > cash / unpaid fallback so a ticket never gets stuck. Beam & LINE are mocked
 > behind swappable adapters (`server/adapters/`) — no real credentials.

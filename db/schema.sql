@@ -68,3 +68,26 @@ CREATE TABLE IF NOT EXISTS payment (
                          CHECK (status IN ('pending','success','failed','voided')),
   created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- §6 RBAC + audit (v0.4). pin_hash is an auth/password hash (scrypt), NOT an
+-- idempotency hash. Demo users seeded from JS bootstrap (hashing lives in JS).
+CREATE TABLE IF NOT EXISTS app_user (
+  id           SERIAL PRIMARY KEY,
+  store_id     INTEGER NOT NULL REFERENCES store(id),
+  name         TEXT NOT NULL,
+  role         TEXT NOT NULL CHECK (role IN ('owner','staff')),
+  pin_hash     TEXT NOT NULL,
+  active       BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at   TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+  id            SERIAL PRIMARY KEY,
+  store_id      INTEGER,
+  actor_user_id INTEGER,
+  action        TEXT NOT NULL,
+  entity        TEXT,
+  entity_id     TEXT,
+  detail        JSONB,
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
