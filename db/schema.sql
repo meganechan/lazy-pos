@@ -168,6 +168,8 @@ CREATE TABLE IF NOT EXISTS staff_settings (
 -- Idempotent ADD COLUMN (Postgres) — bootstrap() runs this file every startup.
 ALTER TABLE ticket_item ADD COLUMN IF NOT EXISTS minutes INTEGER;
 ALTER TABLE ticket ADD COLUMN IF NOT EXISTS assigned_user_id INTEGER REFERENCES app_user(id);
+-- §v1.4 — who opened the bill (for staff "see only my bills" RBAC). Non-destructive.
+ALTER TABLE ticket ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES app_user(id);
 ALTER TABLE ticket ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
 ALTER TABLE ticket ADD COLUMN IF NOT EXISTS est_minutes INTEGER;
 
