@@ -415,19 +415,30 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 
 /* large viewport: owner wide management layout (does NOT apply to .app.lean / staff) */
 @media (min-width: 768px) {
-  .app.wide { max-width: 1100px; }
+  /* owner/tablet/desktop: span the FULL viewport width (no narrow cap) */
+  .app.wide { max-width: none; width: 100%; }
   .app.wide .content { padding: 24px 28px 96px; }
 
   /* wider KPI grid for owner dashboard (4 across) */
   .app.wide .stats.wide-grid { grid-template-columns: repeat(4, 1fr); gap: 14px; }
   .app.wide .stat .v { font-size: 28px; }
 
-  /* keep quick actions compact on wide so they don't stretch full width */
-  .app.wide .quick { grid-template-columns: repeat(4, minmax(0, 1fr)); max-width: 640px; }
+  /* quick actions: 4 across, breathe with the content (no 640 clamp on the left) */
+  .app.wide .quick { grid-template-columns: repeat(4, minmax(0, 1fr)); max-width: none; }
 
-  /* tabbar (a child of .app) respects the wide container width for owner.
+  /* data tables fill the available width */
+  .app.wide .data-table { width: 100%; }
+
+  /* tabbar (a child of .app) also spans the full viewport, aligned with content.
      staff (.lean) stays narrow via the default .tabbar max-width:480. */
-  .app.wide .tabbar { max-width: 1100px; }
+  .app.wide .tabbar { max-width: none; }
+}
+
+/* very wide screens: a touch more side padding + roomier KPI grid so the
+   owner dashboard uses the available width instead of clustering left */
+@media (min-width: 1280px) {
+  .app.wide .content { padding: 28px 40px 96px; }
+  .app.wide .stats.wide-grid { gap: 18px; }
 }
 
 /* ───────────────────────── motion preferences (a11y) ─────────────────────────
