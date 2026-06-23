@@ -664,6 +664,138 @@ app.get('/api/audit', requireOwner, async (req, res) => {
   res.json(rows);
 });
 
+// §v1.6 — OWNER-ONLY sales report (read-only aggregates). Date range via
+// ?from=YYYY-MM-DD&to=YYYY-MM-DD (inclusive; default = today). "Revenue" =
+// payments with status='success' (cash on the spot, EDC after it succeeds);
+// 'unpaid' rows stay pending and are reported separately as outstanding.
+// All aggregation is in SQL (store-scoped), nothing pulls whole tables into JS.
+app.get('/api/reports', requireOwner, async (req, res) => {
+  const storeId = req.user.storeId;
+  // Validate dates; default both to today. Range is [from 00:00, to+1day 00:00).
+  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+  const from = dateRe.test(req.query.from || '') ? req.query.from : null;
+  const to = dateRe.test(req.query.to || '') ? req.query.to : null;
+  // p1=store, p2=from, p3=to (to is exclusive upper via +1 day in SQL)
+  const params = [storeId, from, to];
+  // payment-based filter: success payments whose created_at is in range.
+  const payWhere =
+    `p.status='success' AND t.store_id=$1
+       AND ($2::date IS NULL OR p.created_at >= $2::date)
+       AND ($3::date IS NULL OR p.created_at < ($3::date + INTERVAL '1 day'))`;
+  // ticket-based filter (for service / discount breakdowns): tickets created in range.
+  const tWhere =
+    `t.store_id=$1
+       AND ($2::date IS NULL OR t.created_at >= $2::date)
+       AND ($3::date IS NULL OR t.created_at < ($3::date + INTERVAL '1 day'))`;
+
+  // 1) Totals + 2) by method (one pass over success payments).
+  const methodRows = (await q(
+    `SELECT p.method, COUNT(DISTINCT p.ticket_id)::int AS bills,
+            COUNT(*)::int AS txns, COALESCE(SUM(p.amount),0)::float AS amount
+       FROM payment p JOIN ticket t ON t.id = p.ticket_id
+      WHERE ${payWhere}
+      GROUP BY p.method`, params)).rows;
+  const revenue = methodRows.reduce((s, r) => s + r.amount, 0);
+  const paidBillsRow = (await q(
+    `SELECT COUNT(DISTINCT p.ticket_id)::int AS n
+       FROM payment p JOIN ticket t ON t.id = p.ticket_id
+      WHERE ${payWhere}`, params)).rows[0];
+  const paid_bills = paidBillsRow.n;
+
+  // 3) Outstanding (unpaid bills still pending) in the ticket range.
+  const outstanding = (await q(
+    `SELECT COUNT(*)::int AS count, COALESCE(SUM(p.amount),0)::float AS amount
+       FROM payment p JOIN ticket t ON t.id = p.ticket_id
+      WHERE p.method='unpaid' AND p.status='pending' AND ${tWhere}`,
+    params)).rows[0];
+
+  // 4) By staff — attribute each success payment to the ticket's tech
+  // (assigned, else whoever opened it).
+  const byStaff = (await q(
+    `SELECT COALESCE(t.assigned_user_id, t.created_by) AS user_id,
+            u.name, COUNT(DISTINCT p.ticket_id)::int AS bills,
+            COALESCE(SUM(p.amount),0)::float AS amount
+       FROM payment p JOIN ticket t ON t.id = p.ticket_id
+       LEFT JOIN app_user u ON u.id = COALESCE(t.assigned_user_id, t.created_by)
+      WHERE ${payWhere}
+      GROUP BY COALESCE(t.assigned_user_id, t.created_by), u.name
+      ORDER BY amount DESC`, params)).rows;
+
+  // 5) By service/category — net of per-item discount, for tickets that have a
+  // success payment in range (i.e. actually sold). Bill-level discount is NOT
+  // distributed per item here (reported separately under discounts).
+  const byService = (await q(
+    `SELECT ti.service_id, COALESCE(s.name, ti.custom_name, 'ตามสั่ง') AS name,
+            s.category,
+            SUM(ti.qty)::int AS qty,
+            COALESCE(SUM(
+              ti.quoted_price*ti.qty - CASE
+                WHEN ti.discount_type='percent' THEN ti.quoted_price*ti.qty*LEAST(ti.discount_value,100)/100
+                WHEN ti.discount_type='baht' THEN LEAST(ti.discount_value, ti.quoted_price*ti.qty)
+                ELSE 0 END),0)::float AS amount
+       FROM ticket_item ti
+       JOIN ticket t ON t.id = ti.ticket_id
+       LEFT JOIN service s ON s.id = ti.service_id
+      WHERE ${tWhere}
+        AND EXISTS (SELECT 1 FROM payment p WHERE p.ticket_id=t.id AND p.status='success')
+      GROUP BY ti.service_id, COALESCE(s.name, ti.custom_name, 'ตามสั่ง'), s.category
+      ORDER BY amount DESC
+      LIMIT 20`, params)).rows;
+
+  // 6) Discounts given — total baht (item-level via CASE + bill-level over the
+  // per-ticket subtotal) and number of discount_apply audit events, in range.
+  const discRow = (await q(
+    `WITH ic AS (
+       SELECT ti.ticket_id,
+              SUM(ti.quoted_price*ti.qty) AS gross,
+              SUM(CASE WHEN ti.discount_type='percent' THEN ti.quoted_price*ti.qty*LEAST(ti.discount_value,100)/100
+                       WHEN ti.discount_type='baht' THEN LEAST(ti.discount_value, ti.quoted_price*ti.qty)
+                       ELSE 0 END) AS item_disc
+         FROM ticket_item ti GROUP BY ti.ticket_id
+     )
+     SELECT COALESCE(SUM(
+       ic.item_disc + CASE
+         WHEN t.discount_type='percent' THEN (ic.gross-ic.item_disc)*LEAST(t.discount_value,100)/100
+         WHEN t.discount_type='baht' THEN LEAST(t.discount_value, ic.gross-ic.item_disc)
+         ELSE 0 END),0)::float AS total
+       FROM ticket t JOIN ic ON ic.ticket_id=t.id
+      WHERE ${tWhere}`, params)).rows[0];
+  const discEvents = (await q(
+    `SELECT COUNT(*)::int AS n FROM audit_log a
+      WHERE a.store_id=$1 AND a.action='discount_apply'
+        AND ($2::date IS NULL OR a.created_at >= $2::date)
+        AND ($3::date IS NULL OR a.created_at < ($3::date + INTERVAL '1 day'))`,
+    params)).rows[0].n;
+
+  // 7) Daily revenue trend (success payments per day).
+  const daily = (await q(
+    `SELECT to_char(p.created_at::date,'YYYY-MM-DD') AS day,
+            COALESCE(SUM(p.amount),0)::float AS amount
+       FROM payment p JOIN ticket t ON t.id = p.ticket_id
+      WHERE ${payWhere}
+      GROUP BY p.created_at::date
+      ORDER BY p.created_at::date`, params)).rows;
+
+  const by_method = methodRows
+    .filter(r => r.method !== 'unpaid')
+    .map(r => ({ method: r.method, amount: r.amount, count: r.bills, txns: r.txns }));
+
+  res.json({
+    range: { from, to },
+    totals: {
+      revenue,
+      paid_bills,
+      avg_per_bill: paid_bills ? revenue / paid_bills : 0,
+    },
+    by_method,
+    outstanding: { amount: outstanding.amount, count: outstanding.count },
+    by_staff: byStaff.map(r => ({ user_id: r.user_id, name: r.name || '—', amount: r.amount, bills: r.bills })),
+    by_service: byService.map(r => ({ service_id: r.service_id, name: r.name, category: r.category || 'อื่นๆ', amount: r.amount, qty: r.qty })),
+    discounts: { total: discRow.total, events: discEvents },
+    daily,
+  });
+});
+
 app.get('/api/summary', async (req, res) => {
   const storeId = req.user.storeId;
   // §v0.8 — payment has no store_id of its own here; scope via its parent ticket.
