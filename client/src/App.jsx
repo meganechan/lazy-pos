@@ -3,6 +3,59 @@ import { api, baht, getToken, getUser, setAuth, clearAuth } from './api'
 
 const N = (v) => Number(v || 0)
 
+/* ───────────────────────── Icons (inline Lucide-style SVG) ─────────────────────────
+ * Single source of truth for UI glyphs. Real Lucide path data, consistent 1.75 stroke.
+ * Replaces all emoji used as nav / system / action icons. Pure presentation. */
+const ICONS = {
+  'dashboard': <><rect x="3" y="3" width="7" height="9" rx="1" /><rect x="14" y="3" width="7" height="5" rx="1" /><rect x="14" y="12" width="7" height="9" rx="1" /><rect x="3" y="16" width="7" height="5" rx="1" /></>,
+  'users': <><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></>,
+  'clock': <><circle cx="12" cy="12" r="9" /><polyline points="12 7 12 12 15 14" /></>,
+  'receipt': <><path d="M4 2v20l2-1.5L8 22l2-1.5L12 22l2-1.5L16 22l2-1.5L20 22V2l-2 1.5L16 2l-2 1.5L12 2l-2 1.5L8 2 6 3.5 4 2Z" /><path d="M8 7h8" /><path d="M8 11h8" /><path d="M8 15h5" /></>,
+  'key': <><circle cx="7.5" cy="15.5" r="4.5" /><path d="m10.7 12.3 8.3-8.3" /><path d="m17 5 3 3" /><path d="m14 8 2 2" /></>,
+  'history': <><path d="M5 6h14a2 2 0 0 1 2 2v9a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V5a2 2 0 0 1 2-2h11" /><path d="M19 17V8a2 2 0 0 0-2-2H5" /><path d="M8 8h6" /><path d="M8 12h6" /></>,
+  'sparkles': <><path d="M9.5 3 11 7.5 15.5 9 11 10.5 9.5 15 8 10.5 3.5 9 8 7.5 9.5 3Z" /><path d="M18 4l.7 2.3L21 7l-2.3.7L18 10l-.7-2.3L15 7l2.3-.7L18 4Z" /><path d="M18 14l.7 2.3L21 17l-2.3.7L18 20l-.7-2.3L15 17l2.3-.7L18 14Z" /></>,
+  'banknote': <><rect x="2" y="6" width="20" height="12" rx="2" /><circle cx="12" cy="12" r="2.5" /><path d="M6 12h.01" /><path d="M18 12h.01" /></>,
+  'credit-card': <><rect x="2" y="5" width="20" height="14" rx="2" /><line x1="2" y1="10" x2="22" y2="10" /></>,
+  'rotate-ccw': <><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></>,
+  'plus': <><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></>,
+  'minus': <line x1="5" y1="12" x2="19" y2="12" />,
+  'pencil': <><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" /></>,
+  'play': <polygon points="6 4 20 12 6 20 6 4" />,
+  'search': <><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></>,
+  'log-out': <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></>,
+  'store': <><path d="M3 9 4.5 4h15L21 9" /><path d="M4 9v10a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9" /><path d="M3 9h18" /><path d="M9 20v-6h6v6" /></>,
+  'smartphone': <><rect x="6" y="2" width="12" height="20" rx="2" /><line x1="10" y1="18" x2="14" y2="18" /></>,
+  'message-circle': <path d="M7.9 20A9 9 0 1 0 4 16.1L3 21Z" />,
+  'check': <polyline points="20 6 9 17 4 12" />,
+  'check-circle': <><circle cx="12" cy="12" r="9" /><polyline points="16 9 11 14 8.5 11.5" /></>,
+  'alert-triangle': <><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></>,
+  'chevron-left': <polyline points="15 18 9 12 15 6" />,
+  'chevron-right': <polyline points="9 18 15 12 9 6" />,
+  'lock': <><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></>,
+  'loader': <><line x1="12" y1="2" x2="12" y2="6" /><line x1="12" y1="18" x2="12" y2="22" /><line x1="4.9" y1="4.9" x2="7.8" y2="7.8" /><line x1="16.2" y1="16.2" x2="19.1" y2="19.1" /><line x1="2" y1="12" x2="6" y2="12" /><line x1="18" y1="12" x2="22" y2="12" /><line x1="4.9" y1="19.1" x2="7.8" y2="16.2" /><line x1="16.2" y1="7.8" x2="19.1" y2="4.9" /></>,
+  'delete': <><path d="M21 4H8L1 12l7 8h13a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2Z" /><line x1="18" y1="9" x2="12" y2="15" /><line x1="12" y1="9" x2="18" y2="15" /></>,
+  'send': <><path d="M22 2 11 13" /><path d="M22 2 15 22l-4-9-9-4Z" /></>,
+}
+
+function Icon({ name, size = 24, className }) {
+  const p = ICONS[name]
+  if (!p) return null
+  return (
+    <svg className={'icon ' + (className || '')} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{p}</svg>
+  )
+}
+
+/* Brand wordmark "owo" (owo.chat). Styled text now; swap for an asset later by
+   replacing this component's body. Inherits font-size + uses currentColor so it
+   themes (white on dark bars, near-black on white) with an orange accent letter. */
+function Logo({ className = '' }) {
+  return (
+    <span className={'brand-logo ' + className} aria-label="owo" role="img">
+      o<span className="brand-logo-accent">w</span>o
+    </span>
+  )
+}
+
 const roleTH = { owner: 'เจ้าของร้าน', staff: 'พนักงาน' }
 
 /* viewport hook: exposes isLarge (≥768px). matchMedia with cleanup. */
@@ -33,7 +86,7 @@ function useViewport() {
 
 /* read-only hint banner shown on management views for owner-on-phone */
 function ManageHint() {
-  return <div className="note-warn manage-hint">📱 เปิดบน iPad/คอมเพื่อจัดการ</div>
+  return <div className="note-warn manage-hint"><Icon name="smartphone" size={20} /> เปิดบน iPad/คอมเพื่อจัดการ</div>
 }
 
 // status -> Thai label
@@ -125,9 +178,9 @@ export default function App() {
     <div className={appClass}>
       <div className="topbar">
         {onBack ? (
-          <button className="back" onClick={onBack}>‹</button>
+          <button className="back" onClick={onBack} aria-label="กลับ"><Icon name="chevron-left" size={22} /></button>
         ) : (
-          <span className="logo">💅</span>
+          <Logo className="logo" />
         )}
         <div className="grow">
           <h1>{title}</h1>
@@ -138,7 +191,7 @@ export default function App() {
             <div className="uname">{user.name}</div>
             <div className="urole">{roleTH[role] || role}</div>
           </div>
-          <button className="logout" onClick={doLogout} title="ออกจากระบบ">⎋</button>
+          <button className="logout" onClick={doLogout} title="ออกจากระบบ" aria-label="ออกจากระบบ"><Icon name="log-out" size={18} /></button>
         </div>
       </div>
 
@@ -175,37 +228,37 @@ export default function App() {
       </div>
 
       {showFab && (
-        <button className="fab" onClick={() => setView({ kind: 'newTicket' })}>＋</button>
+        <button className="fab" onClick={() => setView({ kind: 'newTicket' })} aria-label="เปิดบิลใหม่"><Icon name="plus" size={28} /></button>
       )}
 
       {!view && (
         <div className="tabbar">
           <button className={tab === 'dashboard' ? 'active' : ''} onClick={() => goTab('dashboard')}>
-            <span className="tico">📊</span>หน้าหลัก
+            <span className="tico"><Icon name="dashboard" /></span>หน้าหลัก
           </button>
           <button className={tab === 'members' ? 'active' : ''} onClick={() => goTab('members')}>
-            <span className="tico">👥</span>สมาชิก
+            <span className="tico"><Icon name="users" /></span>สมาชิก
           </button>
           <button className={tab === 'queue' ? 'active' : ''} onClick={() => goTab('queue')}>
-            <span className="tico">⏱️</span>คิว
+            <span className="tico"><Icon name="clock" /></span>คิว
           </button>
           {/* staff pick services inside a ticket → hide the บริการ tab (lean) */}
           {isOwner && (
             <button className={tab === 'services' ? 'active' : ''} onClick={() => goTab('services')}>
-              <span className="tico">💅</span>บริการ
+              <span className="tico"><Icon name="sparkles" /></span>บริการ
             </button>
           )}
           <button className={tab === 'tickets' ? 'active' : ''} onClick={() => goTab('tickets')}>
-            <span className="tico">🧾</span>บิล
+            <span className="tico"><Icon name="receipt" /></span>บิล
           </button>
           {isOwner && (
             <button className={tab === 'users' ? 'active' : ''} onClick={() => goTab('users')}>
-              <span className="tico">🔑</span>ผู้ใช้
+              <span className="tico"><Icon name="key" /></span>ผู้ใช้
             </button>
           )}
           {isOwner && (
             <button className={tab === 'audit' ? 'active' : ''} onClick={() => goTab('audit')}>
-              <span className="tico">📜</span>บันทึก
+              <span className="tico"><Icon name="history" /></span>บันทึก
             </button>
           )}
         </div>
@@ -217,7 +270,7 @@ export default function App() {
 }
 
 function Loading() {
-  return <div className="empty"><div className="big">⏳</div>กำลังโหลด...</div>
+  return <div className="empty"><div className="big"><Icon name="loader" size={32} className="spin" /></div>กำลังโหลด...</div>
 }
 
 function StatusBadge({ status }) {
@@ -264,15 +317,15 @@ function Dashboard({ flash, openTicket, onNewTicket, onNewMember, canManage, isO
       )}
 
       <div className="quick">
-        <button onClick={onNewTicket}><span className="ico">🧾</span>เปิดบิลใหม่</button>
-        <button onClick={onNewMember}><span className="ico">➕</span>เพิ่มสมาชิก</button>
+        <button onClick={onNewTicket}><span className="ico"><Icon name="receipt" /></span>เปิดบิลใหม่</button>
+        <button onClick={onNewMember}><span className="ico"><Icon name="plus" /></span>เพิ่มสมาชิก</button>
       </div>
 
       <div className="section-title">บิลที่เปิดอยู่</div>
       {!tickets ? (
         <Loading />
       ) : tickets.length === 0 ? (
-        <div className="empty"><div className="big">✨</div>ยังไม่มีบิลที่เปิดอยู่</div>
+        <div className="empty"><div className="big"><Icon name="sparkles" size={32} /></div>ยังไม่มีบิลที่เปิดอยู่</div>
       ) : (
         tickets.map((t) => (
           <div className="li" key={t.id} onClick={() => openTicket(t.id)}>
@@ -281,8 +334,8 @@ function Dashboard({ flash, openTicket, onNewTicket, onNewMember, canManage, isO
               <div className="name">{t.member_name || 'ลูกค้าทั่วไป'}</div>
               <div className="meta">โดย {t.staff_name || '-'} · <StatusBadge status={t.status} /></div>
             </div>
-            <div className="price">{baht(t.total)}</div>
-            <span className="chev">›</span>
+            <div className="price tnum">{baht(t.total)}</div>
+            <span className="chev"><Icon name="chevron-right" size={20} /></span>
           </div>
         ))
       )}
@@ -307,7 +360,7 @@ function Members({ openMember, onNewMember, ownerPhone }) {
       {ownerPhone ? (
         <ManageHint />
       ) : (
-        <button className="btn" onClick={onNewMember}>➕ เพิ่มสมาชิกใหม่</button>
+        <button className="btn" onClick={onNewMember}><Icon name="plus" size={20} /> เพิ่มสมาชิกใหม่</button>
       )}
       <div className="spacer" />
       <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="ค้นหาชื่อ/เบอร์..." />
@@ -315,7 +368,7 @@ function Members({ openMember, onNewMember, ownerPhone }) {
       {!list ? (
         <Loading />
       ) : list.length === 0 ? (
-        <div className="empty"><div className="big">👥</div>{q.trim() ? 'ไม่พบสมาชิกที่ค้นหา' : 'ยังไม่มีสมาชิก'}</div>
+        <div className="empty"><div className="big"><Icon name="users" size={32} /></div>{q.trim() ? 'ไม่พบสมาชิกที่ค้นหา' : 'ยังไม่มีสมาชิก'}</div>
       ) : (
         list.map((m) => (
           <div className="li" key={m.id} onClick={() => openMember(m.id)}>
@@ -324,7 +377,7 @@ function Members({ openMember, onNewMember, ownerPhone }) {
               <div className="name">{m.name}</div>
               <div className="meta">{m.phone || 'ไม่มีเบอร์'}</div>
             </div>
-            <span className="chev">›</span>
+            <span className="chev"><Icon name="chevron-right" size={20} /></span>
           </div>
         ))
       )}
@@ -405,10 +458,10 @@ function MemberDetail({ id, flash, onNewTicket, openTicket, ownerPhone }) {
       ) : (
         <>
           <div className="btn-row">
-            <button className="btn" onClick={() => onNewTicket(m.id)}>🧾 เปิดบิลให้ลูกค้านี้</button>
+            <button className="btn" onClick={() => onNewTicket(m.id)}><Icon name="receipt" size={20} /> เปิดบิลให้ลูกค้านี้</button>
           </div>
           <div className="btn-row">
-            <button className="btn ghost" onClick={() => setEditing(true)}>✏️ แก้ไขข้อมูล</button>
+            <button className="btn ghost" onClick={() => setEditing(true)}><Icon name="pencil" size={20} /> แก้ไขข้อมูล</button>
           </div>
         </>
       )}
@@ -423,7 +476,7 @@ function MemberDetail({ id, flash, onNewTicket, openTicket, ownerPhone }) {
               <div className="name">บิล #{h.id}</div>
               <div className="meta">{fmtDate(h.created_at)} · <StatusBadge status={h.status} /></div>
             </div>
-            <div className="price">{baht(h.spent)}</div>
+            <div className="price tnum">{baht(h.spent)}</div>
           </div>
         ))
       )}
@@ -527,10 +580,10 @@ function Services({ flash, isOwner, canManage, ownerPhone, wide }) {
     return (
       <>
         <div className="btn-row" style={{ marginTop: 0, marginBottom: 12 }}>
-          <button className="btn" style={{ width: 'auto', padding: '12px 18px' }} onClick={() => setNav({ kind: 'new' })}>➕ เพิ่มบริการ</button>
+          <button className="btn" style={{ width: 'auto', padding: '12px 18px' }} onClick={() => setNav({ kind: 'new' })}><Icon name="plus" size={20} /> เพิ่มบริการ</button>
         </div>
         {list.length === 0 ? (
-          <div className="empty"><div className="big">💅</div>ยังไม่มีบริการ</div>
+          <div className="empty"><div className="big"><Icon name="sparkles" size={32} /></div>ยังไม่มีบริการ</div>
         ) : (
           <table className="data-table">
             <thead>
@@ -605,7 +658,7 @@ function Services({ flash, isOwner, canManage, ownerPhone, wide }) {
   }
 
   // owner-phone (read-only) + staff fallback: grouped read-only list
-  if (list.length === 0) return <div className="empty"><div className="big">💅</div>ยังไม่มีบริการ</div>
+  if (list.length === 0) return <div className="empty"><div className="big"><Icon name="sparkles" size={32} /></div>ยังไม่มีบริการ</div>
   const cats = groupByCat(list)
 
   return (
@@ -618,9 +671,9 @@ function Services({ flash, isOwner, canManage, ownerPhone, wide }) {
             <div className="svc" key={s.id}>
               <div className="grow">
                 <span className="name" style={{ fontWeight: 600 }}>{s.name}</span>
-                <div className="meta" style={{ fontSize: 13, color: 'var(--muted)' }}>{N(s.duration_min)} นาที</div>
+                <div className="meta" style={{ fontSize: 13, color: 'var(--muted)' }}><span className="tnum">{N(s.duration_min)}</span> นาที</div>
               </div>
-              <div className="price">{baht(s.base_price)}</div>
+              <div className="price tnum">{baht(s.base_price)}</div>
             </div>
           ))}
         </div>
@@ -752,7 +805,7 @@ function ServiceDetail({ id, flash, onBack, onEdit }) {
             </div>
             <div className="meta">{s.category || 'อื่นๆ'} · {baht(s.base_price)} · {N(s.duration_min)} นาที</div>
           </div>
-          <button className="btn secondary" style={{ width: 'auto', padding: '8px 14px' }} onClick={() => onEdit(s)}>✏️ แก้ไข</button>
+          <button className="btn secondary" style={{ width: 'auto', padding: '8px 14px' }} onClick={() => onEdit(s)}><Icon name="pencil" size={20} /> แก้ไข</button>
         </div>
         {s.description && <div className="meta" style={{ marginTop: 10, whiteSpace: 'pre-wrap' }}>{s.description}</div>}
       </div>
@@ -806,13 +859,13 @@ function ServiceDetail({ id, flash, onBack, onEdit }) {
         <label>+เวลา (นาที)</label>
         <input type="number" value={oMin} onChange={(e) => setOMin(e.target.value)} placeholder="0" />
         <div className="btn-row">
-          <button className="btn" disabled={busy} onClick={addOpt}>➕ เพิ่ม add-on</button>
+          <button className="btn" disabled={busy} onClick={addOpt}><Icon name="plus" size={20} /> เพิ่ม add-on</button>
         </div>
       </div>
 
       <div className="spacer" />
       <div className="btn-row">
-        <button className="btn ghost" onClick={onBack}>‹ กลับไปรายการบริการ</button>
+        <button className="btn ghost" onClick={onBack}><Icon name="chevron-left" size={20} /> กลับไปรายการบริการ</button>
       </div>
     </>
   )
@@ -826,7 +879,7 @@ function Tickets({ openTicket }) {
   }, [])
 
   if (!list) return <Loading />
-  if (list.length === 0) return <div className="empty"><div className="big">🧾</div>ยังไม่มีบิลที่เปิดอยู่</div>
+  if (list.length === 0) return <div className="empty"><div className="big"><Icon name="receipt" size={32} /></div>ยังไม่มีบิลที่เปิดอยู่</div>
 
   return (
     <>
@@ -837,8 +890,8 @@ function Tickets({ openTicket }) {
             <div className="name">{t.member_name || 'ลูกค้าทั่วไป'}</div>
             <div className="meta">โดย {t.staff_name || '-'} · <StatusBadge status={t.status} /></div>
           </div>
-          <div className="price">{baht(t.total)}</div>
-          <span className="chev">›</span>
+          <div className="price tnum">{baht(t.total)}</div>
+          <span className="chev"><Icon name="chevron-right" size={20} /></span>
         </div>
       ))}
     </>
@@ -858,14 +911,16 @@ function QueueBoard({ flash, openTicket }) {
 
   if (!q) return <Loading />
 
-  const techs = q.technicians || []
+  // owner = manager only (cannot take jobs) → never show on the queue board
+  // (server already excludes them; this is a belt-and-suspenders guard).
+  const techs = (q.technicians || []).filter((t) => t.role !== 'owner')
   const waiting = q.waiting || []
 
   return (
     <>
       <div className="section-title">ช่าง</div>
       {techs.length === 0 ? (
-        <div className="empty"><div className="big">💁‍♀️</div>ยังไม่มีช่าง</div>
+        <div className="empty"><div className="big"><Icon name="users" size={32} /></div>ยังไม่มีช่าง</div>
       ) : (
         techs.map((tech) => {
           const busy = tech.status === 'busy'
@@ -886,7 +941,7 @@ function QueueBoard({ flash, openTicket }) {
                 </div>
               </div>
               <span className={'badge ' + (busy ? 'failed' : 'done')}>
-                {busy ? '🔴 ไม่ว่าง' : '🟢 ว่าง'}
+                {busy ? 'ไม่ว่าง' : 'ว่าง'}
               </span>
             </div>
           )
@@ -895,7 +950,7 @@ function QueueBoard({ flash, openTicket }) {
 
       <div className="section-title">รอคิว / กำลังทำ</div>
       {waiting.length === 0 ? (
-        <div className="empty"><div className="big">✨</div>ไม่มีงานในคิว</div>
+        <div className="empty"><div className="big"><Icon name="sparkles" size={32} /></div>ไม่มีงานในคิว</div>
       ) : (
         waiting.map((w) => (
           <div className="li" key={w.ticket_id} onClick={() => openTicket(w.ticket_id)}>
@@ -903,10 +958,10 @@ function QueueBoard({ flash, openTicket }) {
             <div className="grow">
               <div className="name">{w.member_name || 'ลูกค้าทั่วไป'}</div>
               <div className="meta">
-                ช่าง: {w.assigned_name || 'ยังไม่มอบหมาย'} · ⏱️ ~{N(w.est_minutes)} นาที
+                ช่าง: {w.assigned_name || 'ยังไม่มอบหมาย'} · <Icon name="clock" size={14} className="ico-inline" /> ~<span className="tnum">{N(w.est_minutes)}</span> นาที
               </div>
             </div>
-            <span className="chev">›</span>
+            <span className="chev"><Icon name="chevron-right" size={20} /></span>
           </div>
         ))
       )}
@@ -925,7 +980,8 @@ function NewTicket({ flash, preMember, onCreated }) {
 
   useEffect(() => {
     api.members().then(setMembers).catch(() => setMembers([]))
-    api.authUsers().then(setTechs).catch(() => setTechs([]))
+    // owner = manager only (cannot take jobs) → technician picker = staff only
+    api.authUsers().then((us) => setTechs((us || []).filter((u) => u.role === 'staff'))).catch(() => setTechs([]))
     api.queue()
       .then((q) => {
         const map = {}
@@ -978,7 +1034,7 @@ function NewTicket({ flash, preMember, onCreated }) {
       </select>
       {selBusy && (
         <div className="note-warn">
-          ⚠️ ช่างไม่ว่างถึง {fmtTime(selBusy.busy_until)} — มอบหมายได้ (เข้าคิว)
+          <Icon name="alert-triangle" size={18} className="ico-inline" /> ช่างไม่ว่างถึง {fmtTime(selBusy.busy_until)} — มอบหมายได้ (เข้าคิว)
         </div>
       )}
       <div className="btn-row">
@@ -1035,7 +1091,8 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   useEffect(() => {
     api.ticket(id).then(setT).catch(() => flash('โหลดบิลไม่สำเร็จ'))
     api.services().then(setServices).catch(() => setServices([]))
-    api.authUsers().then(setTechs).catch(() => setTechs([]))
+    // owner = manager only (cannot take jobs) → start/assign picker = staff only
+    api.authUsers().then((us) => setTechs((us || []).filter((u) => u.role === 'staff'))).catch(() => setTechs([]))
     // know if this shop has a paired EDC device → drives default Bolt mode (PAIRING) + QR fallback offer
     api.boltConnection().then((c) => setBoltPaired(!!(c && c.paired))).catch(() => setBoltPaired(false))
   }, [id])
@@ -1330,13 +1387,13 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
         </div>
         {t.busy_until && (
           <div className="meta" style={{ marginTop: 8 }}>
-            ⏱️ เสร็จโดยประมาณ {fmtTime(t.busy_until)}
+            <Icon name="clock" size={14} className="ico-inline" /> เสร็จโดยประมาณ {fmtTime(t.busy_until)}
             {t.est_minutes ? ' (~' + N(t.est_minutes) + ' นาที)' : ''}
           </div>
         )}
         {!readOnly && !t.started_at && !isClosed && items.length > 0 && (
           <div className="btn-row">
-            <button className="btn" disabled={busy} onClick={startWork}>▶️ เริ่มงาน</button>
+            <button className="btn" disabled={busy} onClick={startWork}><Icon name="play" size={20} /> เริ่มงาน</button>
           </div>
         )}
       </div>
@@ -1352,9 +1409,9 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
           <div className="li" key={it.id}>
             <div className="grow">
               <div className="name">{it.service_name} {it.category && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>{it.category}</span>}</div>
-              <div className="meta">จำนวน {N(it.qty)} · ⏱️ {N(it.minutes)} นาที</div>
+              <div className="meta">จำนวน <span className="tnum">{N(it.qty)}</span> · <Icon name="clock" size={14} className="ico-inline" /> <span className="tnum">{N(it.minutes)}</span> นาที</div>
             </div>
-            <div className="price">{baht(N(it.quoted_price) * N(it.qty))}</div>
+            <div className="price tnum">{baht(N(it.quoted_price) * N(it.qty))}</div>
           </div>
         ))
       ) : (
@@ -1363,7 +1420,7 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
             <div className="row">
               <div className="grow">
                 <div className="name">{it.service_name} {it.category && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>{it.category}</span>}</div>
-                <div className="meta">จำนวน {N(it.qty)} · ⏱️ {N(it.minutes)} นาที</div>
+                <div className="meta">จำนวน <span className="tnum">{N(it.qty)}</span> · <Icon name="clock" size={14} className="ico-inline" /> <span className="tnum">{N(it.minutes)}</span> นาที</div>
               </div>
               <button className="btn ghost" style={{ width: 'auto', padding: '8px 12px' }} onClick={() => removeItem(it.id)}>ลบ</button>
             </div>
@@ -1437,11 +1494,11 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
                   <div className="grow">
                     <span style={{ fontWeight: 600 }}>{s.name}</span>
                     {s.category && <span className="cat">{s.category}</span>}
-                    <div className="meta" style={{ fontSize: 13, color: 'var(--muted)' }}>{baht(s.base_price)} · {N(s.duration_min)} นาที</div>
+                    <div className="meta tnum" style={{ fontSize: 13, color: 'var(--muted)' }}>{baht(s.base_price)} · {N(s.duration_min)} นาที</div>
                   </div>
-                  <button disabled={busy || c === 0} onClick={() => removeOneOfService(s)}>−</button>
-                  <span style={{ minWidth: 22, textAlign: 'center', fontWeight: 700 }}>{c}</span>
-                  <button disabled={busy} onClick={() => addService(s)}>＋</button>
+                  <button disabled={busy || c === 0} onClick={() => removeOneOfService(s)} aria-label="ลดจำนวน"><Icon name="minus" size={20} /></button>
+                  <span className="tnum" style={{ minWidth: 22, textAlign: 'center', fontWeight: 700 }}>{c}</span>
+                  <button disabled={busy} onClick={() => addService(s)} aria-label="เพิ่มจำนวน"><Icon name="plus" size={20} /></button>
                 </div>
               )
             })
@@ -1452,22 +1509,22 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
       {/* TOTAL */}
       <div className="total-bar">
         <div className="t">ยอดรวม</div>
-        <div className="v">{baht(total)}</div>
+        <div className="v tnum">{baht(total)}</div>
       </div>
       {estMinutes > 0 && (
-        <div className="meta center" style={{ marginTop: 2 }}>⏱️ ~{estMinutes} นาที</div>
+        <div className="meta center" style={{ marginTop: 2 }}><Icon name="clock" size={14} className="ico-inline" /> ~<span className="tnum">{estMinutes}</span> นาที</div>
       )}
 
       {/* LINE QUOTE STEP */}
       {!(readOnly && !quote) && <div className="section-title">สรุปราคาทาง LINE</div>}
       {readOnly && !quote ? null : !quote ? (
         <button className="btn dark" disabled={busy || items.length === 0} onClick={sendQuote}>
-          📲 ส่งสรุปราคาทาง LINE
+          <Icon name="send" size={20} /> ส่งสรุปราคาทาง LINE
         </button>
       ) : (
         <>
           <div className="line-chat">
-            <div className="line-head">💬 {t.member ? t.member.name : 'ลูกค้า'}</div>
+            <div className="line-head"><Icon name="message-circle" size={16} /> {t.member ? t.member.name : 'ลูกค้า'}</div>
             <div className="line-bubble me">
               สรุปราคาบริการค่ะ 💅<br />
               {items.map((it) => (
@@ -1482,10 +1539,10 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
             )}
           </div>
           {quote.confirmed_at ? (
-            <div className="center muted" style={{ marginTop: 10 }}>ลูกค้ายืนยันแล้ว ✅ ({fmtDate(quote.confirmed_at)})</div>
+            <div className="center muted" style={{ marginTop: 10 }}>ลูกค้ายืนยันแล้ว <Icon name="check-circle" size={16} className="ico-inline ico-ok" /> ({fmtDate(quote.confirmed_at)})</div>
           ) : readOnly ? null : (
             <div className="btn-row">
-              <button className="btn" disabled={busy} onClick={confirmQuote}>✅ ลูกค้า Confirm</button>
+              <button className="btn" disabled={busy} onClick={confirmQuote}><Icon name="check" size={20} /> ลูกค้า Confirm</button>
             </div>
           )}
         </>
@@ -1514,12 +1571,12 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
                       ) : (
                         <span className={'badge ' + st}>{st}</span>
                       )}
-                      <div className="price" style={{ marginLeft: 8 }}>{baht(p.amount)}</div>
+                      <div className="price tnum" style={{ marginLeft: 8 }}>{baht(p.amount)}</div>
                     </div>
                     {!readOnly && !isVoided && (canRetry || canManage) && (
                       <div className="btn-row" style={{ marginTop: 6 }}>
                         {canRetry && (
-                          <button className="btn secondary" style={{ width: 'auto', padding: '8px 14px' }} disabled={busy} onClick={() => retryPay(p)}>🔁 ลองรูดอีกครั้ง</button>
+                          <button className="btn secondary" style={{ width: 'auto', padding: '8px 14px' }} disabled={busy} onClick={() => retryPay(p)}><Icon name="rotate-ccw" size={20} /> ลองรูดอีกครั้ง</button>
                         )}
                         {canManage && (
                           <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} disabled={busy} onClick={() => voidPay(p)}>ยกเลิก</button>
@@ -1528,7 +1585,7 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
                     )}
                     {reconcile === p.id && (
                       <div className="card" style={{ marginTop: 6, borderColor: 'var(--bad)' }}>
-                        <div style={{ color: 'var(--bad)', fontWeight: 700 }}>⚠️ คีย์หมดอายุ (&gt;12 ชม.)</div>
+                        <div style={{ color: 'var(--bad)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}><Icon name="alert-triangle" size={18} /> คีย์หมดอายุ (&gt;12 ชม.)</div>
                         <div className="meta" style={{ marginTop: 4 }}>ต้อง reconcile เอง — ตรวจสอบกับเครื่อง EDC/ธนาคารก่อนทำรายการใหม่</div>
                       </div>
                     )}
@@ -1616,11 +1673,11 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
               </div>
             ) : edcStep ? (
               <div className="card">
-                <div className="center" style={{ fontSize: 32 }}>💳</div>
+                <div className="center" style={{ color: 'var(--accent)' }}><Icon name="credit-card" size={32} /></div>
                 <div className="center muted" style={{ marginBottom: 10 }}>กำลังรูดบัตรผ่านเครื่อง Beam EDC / Bolt...</div>
                 <div className="btn-row">
-                  <button className="btn" disabled={busy} onClick={() => doPay('beam_edc')}>✅ จำลองสำเร็จ</button>
-                  <button className="btn dark" disabled={busy} onClick={() => doPay('beam_edc', 'fail')}>⚠️ จำลองล้มเหลว</button>
+                  <button className="btn" disabled={busy} onClick={() => doPay('beam_edc')}><Icon name="check" size={20} /> จำลองสำเร็จ</button>
+                  <button className="btn dark" disabled={busy} onClick={() => doPay('beam_edc', 'fail')}><Icon name="alert-triangle" size={20} /> จำลองล้มเหลว</button>
                 </div>
                 <div className="btn-row">
                   <button className="btn ghost" disabled={busy} onClick={() => setEdcStep(false)}>ยกเลิก</button>
@@ -1628,21 +1685,21 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
               </div>
             ) : payFail ? (
               <div className="card">
-                <div className="center" style={{ fontSize: 28 }}>⚠️</div>
+                <div className="center" style={{ color: 'var(--danger)' }}><Icon name="alert-triangle" size={28} /></div>
                 <div className="center" style={{ color: 'var(--bad)', fontWeight: 700 }}>EDC ล้มเหลว</div>
                 <div className="center muted" style={{ marginBottom: 10 }}>บิลไม่ค้าง — เลือกวิธีสำรองได้เลย</div>
                 <div className="pay-grid">
                   <div className="pay" onClick={() => doPay('cash')}>
-                    <div className="ico">💵</div>
+                    <div className="ico"><Icon name="banknote" size={20} /></div>
                     <div className="grow"><div>เงินสด</div><div className="desc">รับเป็นเงินสด</div></div>
-                    <div className="price">{baht(total)}</div>
+                    <div className="price tnum">{baht(total)}</div>
                   </div>
                   <div className="pay" onClick={() => doPay('unpaid')}>
-                    <div className="ico">🕓</div>
+                    <div className="ico"><Icon name="clock" size={20} /></div>
                     <div className="grow"><div>ค้างชำระ</div><div className="desc">ไว้จ่ายภายหลัง</div></div>
                   </div>
                   <div className="pay" onClick={() => { setPayFail(false); setEdcStep(true) }}>
-                    <div className="ico">🔁</div>
+                    <div className="ico"><Icon name="rotate-ccw" size={20} /></div>
                     <div className="grow"><div>ลองรูดบัตรอีกครั้ง</div><div className="desc">Beam EDC</div></div>
                   </div>
                 </div>
@@ -1662,12 +1719,12 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
             ) : (
               <div className="pay-grid">
                 <div className="pay" onClick={() => doPay('cash')}>
-                  <div className="ico">💵</div>
+                  <div className="ico"><Icon name="banknote" size={20} /></div>
                   <div className="grow"><div>เงินสด</div><div className="desc">Cash</div></div>
-                  <div className="price">{baht(total)}</div>
+                  <div className="price tnum">{baht(total)}</div>
                 </div>
                 <div className="pay" onClick={() => setEdcStep(true)}>
-                  <div className="ico">💳</div>
+                  <div className="ico"><Icon name="credit-card" size={20} /></div>
                   <div className="grow"><div>บัตร (Beam EDC)</div><div className="desc">รูดบัตรเครดิต/เดบิต</div></div>
                 </div>
                 {boltPaired ? (
@@ -1692,7 +1749,7 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
                   </div>
                 )}
                 <div className="pay" onClick={() => doPay('unpaid')}>
-                  <div className="ico">🕓</div>
+                  <div className="ico"><Icon name="clock" size={20} /></div>
                   <div className="grow"><div>ค้างชำระ</div><div className="desc">Unpaid</div></div>
                 </div>
               </div>
@@ -1700,7 +1757,7 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
           )}
 
           {isPaid && (
-            <div className="center" style={{ color: 'var(--ok)', fontWeight: 700, margin: '8px 0' }}>✅ ชำระครบแล้ว {baht(paid)}</div>
+            <div className="center" style={{ color: 'var(--ok)', fontWeight: 700, margin: '8px 0', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}><Icon name="check-circle" size={18} /> ชำระครบแล้ว <span className="tnum">{baht(paid)}</span></div>
           )}
         </>
       )}
@@ -1708,7 +1765,7 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
       {/* CLOSE — available once paid OR an unpaid record exists (bill not stuck) */}
       {!readOnly && (isPaid || payments.length > 0) && (
         <div className="btn-row">
-          <button className="btn dark" disabled={busy} onClick={closeBill}>🧾 ปิดบิล / Close</button>
+          <button className="btn dark" disabled={busy} onClick={closeBill}><Icon name="receipt" size={20} /> ปิดบิล / Close</button>
         </div>
       )}
       <div className="spacer" />
@@ -1734,12 +1791,12 @@ function Receipt({ t }) {
         {items.map((it) => (
           <div className="rl" key={it.id}>
             <span>{it.service_name} ×{N(it.qty)}</span>
-            <span>{baht(N(it.quoted_price) * N(it.qty))}</span>
+            <span className="tnum">{baht(N(it.quoted_price) * N(it.qty))}</span>
           </div>
         ))}
         <div className="div" />
-        <div className="rl grand"><span>รวมทั้งสิ้น</span><span>{baht(total)}</span></div>
-        <div className="rl"><span>ชำระแล้ว</span><span>{baht(paid)}</span></div>
+        <div className="rl grand"><span>รวมทั้งสิ้น</span><span className="tnum">{baht(total)}</span></div>
+        <div className="rl"><span>ชำระแล้ว</span><span className="tnum">{baht(paid)}</span></div>
         {lastPay && (
           <div className="rl"><span>วิธีชำระ</span><span>{payMethodTH(lastPay.method)} <span className={'badge ' + (lastPay.status || 'pending')}>{lastPay.status || 'pending'}</span></span></div>
         )}
@@ -1773,9 +1830,9 @@ function PinPad({ pin, busy, err, onPress, onBack, onSubmit, minLen = 4, okLabel
         {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((d) => (
           <button key={d} className="pinkey" disabled={busy} onClick={() => onPress(d)}>{d}</button>
         ))}
-        <button className="pinkey ghost" disabled={busy || pin.length === 0} onClick={onBack}>⌫</button>
+        <button className="pinkey ghost" disabled={busy || pin.length === 0} onClick={onBack} aria-label="ลบ"><Icon name="delete" size={26} /></button>
         <button className="pinkey" disabled={busy} onClick={() => onPress('0')}>0</button>
-        <button className="pinkey ok" disabled={busy || pin.length < minLen} onClick={onSubmit}>{busy ? '…' : okLabel}</button>
+        <button className="pinkey ok" disabled={busy || pin.length < minLen} onClick={onSubmit} aria-label="ยืนยัน">{busy ? '…' : (okLabel === '✓' ? <Icon name="check" size={28} /> : okLabel)}</button>
       </div>
     </>
   )
@@ -1912,10 +1969,10 @@ function Login({ onLoggedIn }) {
   return (
     <div className="login">
       <div className="login-head">
-        <div className="login-logo">💅</div>
+        <Logo className="login-logo" />
         <h1>Lazy Nail POS</h1>
         <div className="sub">
-          {step === 'shop' ? 'เลือกร้านเพื่อเข้าสู่ระบบ'
+          {step === 'shop' ? 'กรอกรหัสร้านเพื่อเข้าสู่ระบบ'
             : step === 'signup' ? 'สมัครร้านใหม่'
             : step === 'user' ? 'เลือกผู้ใช้ของร้าน'
             : 'ใส่ PIN เพื่อเข้าสู่ระบบ'}
@@ -1926,30 +1983,12 @@ function Login({ onLoggedIn }) {
         <div className="login-body">
           {newCode && (
             <div className="note-ok shop-code-banner">
-              ✅ สร้างร้านสำเร็จ — ร้านของคุณคือรหัส: <b>{newCode}</b>
-              <div className="meta" style={{ marginTop: 4 }}>เลือกร้านด้านล่างแล้วเข้าสู่ระบบด้วย PIN เจ้าของ</div>
+              <Icon name="check-circle" size={18} className="ico-inline" /> สร้างร้านสำเร็จ — ร้านของคุณคือรหัส: <b>{newCode}</b>
+              <div className="meta" style={{ marginTop: 4 }}>กรอกรหัสร้านด้านล่างแล้วเข้าสู่ระบบด้วย PIN เจ้าของ</div>
             </div>
           )}
 
-          <div className="section-title">เลือกร้าน</div>
-          {!shops ? (
-            <Loading />
-          ) : shops.length === 0 ? (
-            <div className="empty"><div className="big">🏪</div>ยังไม่มีร้าน</div>
-          ) : (
-            shops.map((s) => (
-              <div className="li" key={s.id} onClick={() => chooseShop(s)}>
-                <div className="avatar">🏪</div>
-                <div className="grow">
-                  <div className="name">{s.name}</div>
-                  <div className="meta">รหัส: {s.code}</div>
-                </div>
-                <span className="chev">›</span>
-              </div>
-            ))
-          )}
-
-          <div className="section-title">หรือใส่ Shop code</div>
+          <div className="section-title">รหัสร้าน (Shop code)</div>
           <input
             value={code}
             onChange={(e) => { setShopErr(''); setCode(e.target.value) }}
@@ -1963,13 +2002,13 @@ function Login({ onLoggedIn }) {
 
           <div className="spacer" />
           <div className="btn-row">
-            <button className="btn ghost" onClick={() => { setSignupErr(''); setNewCode(''); setStep('signup') }}>➕ สมัครร้านใหม่</button>
+            <button className="btn ghost" onClick={() => { setSignupErr(''); setNewCode(''); setStep('signup') }}><Icon name="plus" size={20} /> สมัครร้านใหม่</button>
           </div>
         </div>
       ) : step === 'signup' ? (
         <div className="login-body">
           <div className="btn-row" style={{ marginTop: 0, marginBottom: 6 }}>
-            <button className="btn ghost" style={{ width: 'auto', padding: '8px 12px' }} onClick={() => { setSignupErr(''); setStep('shop') }}>‹ กลับ</button>
+            <button className="btn ghost" style={{ width: 'auto', padding: '8px 12px' }} onClick={() => { setSignupErr(''); setStep('shop') }}><Icon name="chevron-left" size={20} /> กลับ</button>
           </div>
           <div className="card">
             <label>ชื่อร้าน *</label>
@@ -1995,10 +2034,10 @@ function Login({ onLoggedIn }) {
       ) : step === 'user' ? (
         <div className="login-body">
           <div className="btn-row" style={{ marginTop: 0, marginBottom: 6 }}>
-            <button className="btn ghost" style={{ width: 'auto', padding: '8px 12px' }} onClick={backToShop}>‹ เปลี่ยนร้าน</button>
+            <button className="btn ghost" style={{ width: 'auto', padding: '8px 12px' }} onClick={backToShop}><Icon name="chevron-left" size={20} /> เปลี่ยนร้าน</button>
           </div>
           <div className="li" style={{ marginBottom: 6 }}>
-            <div className="avatar">🏪</div>
+            <div className="avatar"><Icon name="store" size={20} /></div>
             <div className="grow">
               <div className="name">{shop ? shop.name : ''}</div>
               <div className="meta">รหัส: {shop ? shop.code : ''}</div>
@@ -2009,7 +2048,7 @@ function Login({ onLoggedIn }) {
           {!users ? (
             <Loading />
           ) : users.length === 0 ? (
-            <div className="empty"><div className="big">🔒</div>ยังไม่มีผู้ใช้ในร้านนี้</div>
+            <div className="empty"><div className="big"><Icon name="lock" size={32} /></div>ยังไม่มีผู้ใช้ในร้านนี้</div>
           ) : (
             users.map((u) => (
               <div className="li" key={u.id} onClick={() => { setPicked(u); setPin(''); setErr(''); setStep('pin') }}>
@@ -2018,7 +2057,7 @@ function Login({ onLoggedIn }) {
                   <div className="name">{u.name}</div>
                   <div className="meta"><RoleBadge role={u.role} /></div>
                 </div>
-                <span className="chev">›</span>
+                <span className="chev"><Icon name="chevron-right" size={20} /></span>
               </div>
             ))
           )}
@@ -2145,7 +2184,7 @@ function Users({ flash, onNewUser, onEditUser, canManage, ownerPhone, wide }) {
   useEffect(() => { load() }, [])
 
   if (!list) return <Loading />
-  if (list.length === 0) return <div className="empty"><div className="big">🔑</div>ยังไม่มีผู้ใช้</div>
+  if (list.length === 0) return <div className="empty"><div className="big"><Icon name="key" size={32} /></div>ยังไม่มีผู้ใช้</div>
 
   // owner + large → management table with inline edit
   if (wide && canManage) {
@@ -2153,7 +2192,7 @@ function Users({ flash, onNewUser, onEditUser, canManage, ownerPhone, wide }) {
       <>
         <BoltPairing flash={flash} canManage={canManage} />
         <div className="btn-row" style={{ marginTop: 0, marginBottom: 12 }}>
-          <button className="btn" style={{ width: 'auto', padding: '12px 18px' }} onClick={onNewUser}>➕ เพิ่มผู้ใช้ใหม่</button>
+          <button className="btn" style={{ width: 'auto', padding: '12px 18px' }} onClick={onNewUser}><Icon name="plus" size={20} /> เพิ่มผู้ใช้ใหม่</button>
         </div>
         <table className="data-table">
           <thead>
@@ -2188,7 +2227,7 @@ function Users({ flash, onNewUser, onEditUser, canManage, ownerPhone, wide }) {
       {ownerPhone ? (
         <ManageHint />
       ) : (
-        canManage && <button className="btn" onClick={onNewUser}>➕ เพิ่มผู้ใช้ใหม่</button>
+        canManage && <button className="btn" onClick={onNewUser}><Icon name="plus" size={20} /> เพิ่มผู้ใช้ใหม่</button>
       )}
       <div className="spacer" />
       {list.map((u) => (
@@ -2201,7 +2240,7 @@ function Users({ flash, onNewUser, onEditUser, canManage, ownerPhone, wide }) {
               {u.active === false ? <span className="badge closed">ปิดใช้งาน</span> : <span className="badge done">ใช้งานอยู่</span>}
             </div>
           </div>
-          {!ownerPhone && <span className="chev">›</span>}
+          {!ownerPhone && <span className="chev"><Icon name="chevron-right" size={20} /></span>}
         </div>
       ))}
     </>
@@ -2215,11 +2254,17 @@ function UserForm({ flash, u, onDone, onCancel }) {
   const [pin, setPin] = useState('')
   const [active, setActive] = useState(u ? u.active !== false : true)
   const [saving, setSaving] = useState(false)
+  const [pinErr, setPinErr] = useState('')
+
+  // PIN policy mirrors the server: 4–6 digits. Required on create; on edit only
+  // when a new PIN is typed (blank = keep current). Inline error, no server round-trip.
+  const pinNeedsCheck = !editing || pin.length > 0
+  const pinBad = pinNeedsCheck && !/^\d{4,6}$/.test(pin)
 
   const save = () => {
     if (!name.trim()) { flash('กรุณากรอกชื่อ'); return }
-    if (!editing && !/^\d{4,6}$/.test(pin)) { flash('PIN ต้องเป็นตัวเลข 4–6 หลัก'); return }
-    if (editing && pin && !/^\d{4,6}$/.test(pin)) { flash('PIN ต้องเป็นตัวเลข 4–6 หลัก'); return }
+    if (pinBad) { setPinErr('PIN ต้องเป็นตัวเลข 4–6 หลัก'); return }
+    setPinErr('')
 
     setSaving(true)
     if (editing) {
@@ -2251,9 +2296,10 @@ function UserForm({ flash, u, onDone, onCancel }) {
         type="tel"
         inputMode="numeric"
         value={pin}
-        onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))}
+        onChange={(e) => { setPinErr(''); setPin(e.target.value.replace(/\D/g, '').slice(0, 6)) }}
         placeholder="••••"
       />
+      {pinErr && <div className="pin-err">{pinErr}</div>}
 
       {editing && (
         <>
@@ -2329,7 +2375,7 @@ function AuditLog({ flash, wide }) {
         {!list ? (
           <Loading />
         ) : list.length === 0 ? (
-          <div className="empty"><div className="big">📜</div>ไม่มีบันทึกกิจกรรม</div>
+          <div className="empty"><div className="big"><Icon name="history" size={32} /></div>ไม่มีบันทึกกิจกรรม</div>
         ) : (
           <table className="data-table">
             <thead>
@@ -2363,7 +2409,7 @@ function AuditLog({ flash, wide }) {
       {!list ? (
         <Loading />
       ) : list.length === 0 ? (
-        <div className="empty"><div className="big">📜</div>ไม่มีบันทึกกิจกรรม</div>
+        <div className="empty"><div className="big"><Icon name="history" size={32} /></div>ไม่มีบันทึกกิจกรรม</div>
       ) : (
         <div className="timeline">
           {list.map((r) => (

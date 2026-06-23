@@ -38,11 +38,15 @@ const j = async (url, opts = {}) => {
   if (!r.ok) {
     const data = await r.json().catch(() => ({}))
 
-    // session gone/expired → drop auth and force back to login
+    // 401 handling:
+    //  - WITH a token = an existing session expired mid-use → drop auth + reload to <Login/>.
+    //  - WITHOUT a token = a pre-auth call (login/lookup); a wrong PIN returns 401 here, so
+    //    DON'T reload — just throw so the caller (e.g. submit) can show "PIN ไม่ถูกต้อง".
     if (r.status === 401) {
-      clearAuth()
-      // reload so the App gate re-renders <Login/>
-      if (typeof window !== 'undefined') window.location.reload()
+      if (token) {
+        clearAuth()
+        if (typeof window !== 'undefined') window.location.reload()
+      }
       const err = new Error(data.error || 'unauthorized')
       err.status = 401
       err.body = data

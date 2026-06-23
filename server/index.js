@@ -100,6 +100,11 @@ async function audit(actorUserId, storeId, action, entity, entityId, detail) {
 
 // ---- helpers ----
 
+// PIN policy: numeric, 4–6 digits. Shared by signup + user create/update so the
+// rule is defined once (DRY). Returns true if the PIN is acceptable.
+const isValidPin = (p) => /^\d{4,6}$/.test(p == null ? '' : String(p).trim());
+const PIN_RULE_MSG = 'PIN ต้องเป็นตัวเลข 4–6 หลัก';
+
 // §v0.6 — derived "busy until" for a ticket. A ticket locks its technician only
 // while in_progress with both started_at and est_minutes set. Returns a Date or
 // null. busy_until = started_at + est_minutes*60000ms.
@@ -280,7 +285,7 @@ app.post('/api/auth/signup', async (req, res) => {
   const shopName = typeof shop_name === 'string' ? shop_name.trim() : '';
   const ownerName = typeof owner_name === 'string' ? owner_name.trim() : '';
   const pinStr = owner_pin == null ? '' : String(owner_pin).trim();
-  if (!shopName || !ownerName || !/^\d{4,6}$/.test(pinStr))
+  if (!shopName || !ownerName || !isValidPin(pinStr))
     return res.status(400).json({
       error: 'shop_name, owner_name and a 4-6 digit owner_pin are required',
     });
@@ -457,15 +462,17 @@ app.get('/api/users', requireOwner, async (req, res) => {
 
 app.post('/api/users', requireOwner, async (req, res) => {
   const { name, role, pin } = req.body || {};
-  if (!name || !role || pin == null)
-    return res.status(400).json({ error: 'name, role and pin required' });
+  if (!name || !role)
+    return res.status(400).json({ error: 'name and role required' });
   if (!['owner', 'staff'].includes(role))
     return res.status(400).json({ error: 'bad role' });
+  if (!isValidPin(pin))
+    return res.status(400).json({ error: PIN_RULE_MSG });
   const u = (await q(
     `INSERT INTO app_user (store_id, name, role, pin_hash)
      VALUES ($1,$2,$3,$4)
      RETURNING id, name, role, active, created_at`,
-    [req.user.storeId, name, role, hashPin(pin)])).rows[0];
+    [req.user.storeId, name, role, hashPin(String(pin).trim())])).rows[0];
   await audit(req.user.id, req.user.storeId, 'user_create', 'app_user', u.id,
     { name: u.name, role: u.role });
   res.json(u);
@@ -479,11 +486,14 @@ app.put('/api/users/:id', requireOwner, async (req, res) => {
   const { name, role, pin, active } = req.body || {};
   if (role !== undefined && !['owner', 'staff'].includes(role))
     return res.status(400).json({ error: 'bad role' });
+  // validate PIN only when one is being set/changed; omitting pin = keep current.
+  if (pin !== undefined && pin !== null && !isValidPin(pin))
+    return res.status(400).json({ error: PIN_RULE_MSG });
   const next = {
     name: name === undefined ? existing.name : name,
     role: role === undefined ? existing.role : role,
     active: active === undefined ? existing.active : !!active,
-    pin_hash: pin === undefined || pin === null ? existing.pin_hash : hashPin(pin),
+    pin_hash: pin === undefined || pin === null ? existing.pin_hash : hashPin(String(pin).trim()),
   };
   const u = (await q(
     `UPDATE app_user SET name=$2, role=$3, active=$4, pin_hash=$5
@@ -1122,9 +1132,12 @@ app.put('/api/tickets/:id/assign', async (req, res) => {
   // §v0.8 — the technician must belong to this store too (no cross-tenant assign).
   if (assigned_user_id) {
     const tech = (await q(
-      'SELECT id FROM app_user WHERE id=$1 AND store_id=$2',
+      'SELECT id, role FROM app_user WHERE id=$1 AND store_id=$2',
       [assigned_user_id, req.user.storeId])).rows[0];
     if (!tech) return res.status(404).json({ error: 'user not found' });
+    // owner = manager only, cannot take jobs.
+    if (tech.role === 'owner')
+      return res.status(400).json({ error: 'owner cannot take jobs / เจ้าของร้านรับงานไม่ได้' });
   }
   await q('UPDATE ticket SET assigned_user_id=$2 WHERE id=$1 AND store_id=$3',
     [req.params.id, assigned_user_id || null, req.user.storeId]);
@@ -1146,9 +1159,12 @@ app.post('/api/tickets/:id/start', async (req, res) => {
   // §v0.8 — if a technician is being assigned, they must be in this store.
   if (tech) {
     const techRow = (await q(
-      'SELECT id FROM app_user WHERE id=$1 AND store_id=$2',
+      'SELECT id, role FROM app_user WHERE id=$1 AND store_id=$2',
       [tech, req.user.storeId])).rows[0];
     if (!techRow) return res.status(404).json({ error: 'user not found' });
+    // owner = manager only, cannot take jobs.
+    if (techRow.role === 'owner')
+      return res.status(400).json({ error: 'owner cannot take jobs / เจ้าของร้านรับงานไม่ได้' });
   }
   await recomputeEstMinutes(req.params.id);
   await q(
@@ -1178,8 +1194,9 @@ app.get('/api/queue', async (req, res) => {
   const now = Date.now();
   const storeId = req.user.storeId;
   // §v0.8 — store-scoped technicians + tickets.
+  // owner = manager only (cannot take jobs) → exclude from the queue board.
   const techs = (await q(
-    'SELECT id, name, role FROM app_user WHERE active AND store_id=$1 ORDER BY role, name',
+    "SELECT id, name, role FROM app_user WHERE active AND store_id=$1 AND role <> 'owner' ORDER BY role, name",
     [storeId])).rows;
   // Live open/in_progress tickets with member name for labels.
   const tickets = (await q(
