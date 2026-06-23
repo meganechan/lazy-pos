@@ -170,6 +170,18 @@ ALTER TABLE ticket_item ADD COLUMN IF NOT EXISTS minutes INTEGER;
 ALTER TABLE ticket ADD COLUMN IF NOT EXISTS assigned_user_id INTEGER REFERENCES app_user(id);
 -- §v1.4 — who opened the bill (for staff "see only my bills" RBAC). Non-destructive.
 ALTER TABLE ticket ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES app_user(id);
+
+-- §v1.5 — daily staff attendance (check-in/out). "Working today" is derived from
+-- the row for CURRENT_DATE (checked in AND not checked out) — resets naturally each
+-- day, no cron. Only checked-in staff appear in the queue / tech pickers.
+CREATE TABLE IF NOT EXISTS attendance (
+  store_id     INTEGER NOT NULL,
+  user_id      INTEGER NOT NULL,
+  day          DATE NOT NULL,
+  check_in_at  TIMESTAMPTZ,
+  check_out_at TIMESTAMPTZ,
+  PRIMARY KEY (store_id, user_id, day)
+);
 ALTER TABLE ticket ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
 ALTER TABLE ticket ADD COLUMN IF NOT EXISTS est_minutes INTEGER;
 

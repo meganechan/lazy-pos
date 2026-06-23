@@ -23,6 +23,7 @@ const ICONS = {
   'play': <polygon points="6 4 20 12 6 20 6 4" />,
   'search': <><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></>,
   'log-out': <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></>,
+  'log-in': <><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" /><polyline points="10 17 15 12 10 7" /><line x1="15" y1="12" x2="3" y2="12" /></>,
   'store': <><path d="M3 9 4.5 4h15L21 9" /><path d="M4 9v10a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9" /><path d="M3 9h18" /><path d="M9 20v-6h6v6" /></>,
   'smartphone': <><rect x="6" y="2" width="12" height="20" rx="2" /><line x1="10" y1="18" x2="14" y2="18" /></>,
   'message-circle': <path d="M7.9 20A9 9 0 1 0 4 16.1L3 21Z" />,
@@ -290,12 +291,43 @@ function StatusBadge({ status }) {
 function Dashboard({ flash, openTicket, onNewTicket, onNewMember, canManage, isOwner, wide }) {
   const [sum, setSum] = useState(null)
   const [tickets, setTickets] = useState(null)
+  const [att, setAtt] = useState(null) // { me, staff } from attendanceToday
+  const [attBusy, setAttBusy] = useState(false)
 
+  const loadAtt = () => {
+    api.attendanceToday().then(setAtt).catch(() => setAtt(null))
+  }
   const load = () => {
     api.summary().then(setSum).catch(() => flash('โหลดสรุปไม่สำเร็จ'))
     api.tickets().then(setTickets).catch(() => setTickets([]))
+    loadAtt()
   }
   useEffect(load, [])
+
+  // staff: check self in/out
+  const selfCheckIn = () => {
+    setAttBusy(true)
+    api.checkIn()
+      .then(() => { loadAtt(); flash('เข้างานแล้ว') })
+      .catch((e) => flash('ผิดพลาด: ' + e.message))
+      .finally(() => setAttBusy(false))
+  }
+  const selfCheckOut = () => {
+    setAttBusy(true)
+    api.checkOut()
+      .then(() => { loadAtt(); flash('เลิกงานแล้ว') })
+      .catch((e) => flash('ผิดพลาด: ' + e.message))
+      .finally(() => setAttBusy(false))
+  }
+  // owner: toggle a staff member's attendance
+  const ownerToggle = (s) => {
+    setAttBusy(true)
+    const fn = s.checked_in ? api.checkOut(s.user_id) : api.checkIn(s.user_id)
+    fn
+      .then(() => { loadAtt(); flash(s.checked_in ? 'เลิกงานแล้ว' : 'เข้างานแล้ว') })
+      .catch((e) => flash('ผิดพลาด: ' + e.message))
+      .finally(() => setAttBusy(false))
+  }
 
   if (!sum) return <Loading />
 
@@ -329,6 +361,52 @@ function Dashboard({ flash, openTicket, onNewTicket, onNewMember, canManage, isO
         <button onClick={onNewTicket}><span className="ico"><Icon name="receipt" /></span>เปิดบิลใหม่</button>
         <button onClick={onNewMember}><span className="ico"><Icon name="plus" /></span>เพิ่มสมาชิก</button>
       </div>
+
+      {att && !isOwner && att.me && (
+        <div className="card" style={{ marginBottom: 12 }}>
+          {att.me.checked_in ? (
+            <>
+              <div className="name" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#22c55e', display: 'inline-block' }} />
+                เข้างานแล้ว{att.me.check_in_at ? ' · ' + fmtTime(att.me.check_in_at) : ''}
+              </div>
+              <div className="meta" style={{ marginBottom: 8 }}>คุณพร้อมรับคิวงานวันนี้</div>
+              <button className="btn ghost" disabled={attBusy} onClick={selfCheckOut}>
+                <Icon name="log-out" size={18} className="ico-inline" /> เลิกงาน
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="name" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#9ca3af', display: 'inline-block' }} />
+                ยังไม่เข้างาน
+              </div>
+              <div className="meta" style={{ marginBottom: 8 }}>กดเข้างานก่อน ถึงจะถูกมอบหมาย/เข้าคิวได้</div>
+              <button className="btn" disabled={attBusy} onClick={selfCheckIn}>
+                <Icon name="log-in" size={18} className="ico-inline" /> เข้างาน
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {att && isOwner && (att.staff || []).length > 0 && (
+        <div className="card" style={{ marginBottom: 12 }}>
+          <div className="section-title" style={{ marginTop: 0 }}>การเข้างานวันนี้</div>
+          {att.staff.map((s) => (
+            <div className="li" key={s.user_id}>
+              <span style={{ width: 10, height: 10, borderRadius: '50%', flex: '0 0 auto', background: s.checked_in ? '#22c55e' : '#9ca3af', display: 'inline-block', marginRight: 8 }} />
+              <div className="grow">
+                <div className="name">{s.name}</div>
+                <div className="meta">{s.checked_in ? 'เข้างาน' + (s.check_in_at ? ' · ' + fmtTime(s.check_in_at) : '') : 'ยังไม่เข้างาน'}</div>
+              </div>
+              <button className="btn ghost" style={{ width: 'auto' }} disabled={attBusy} onClick={() => ownerToggle(s)}>
+                {s.checked_in ? 'เลิกงาน' : 'เข้างาน'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="section-title">บิลที่เปิดอยู่</div>
       {!tickets ? (
@@ -1051,8 +1129,10 @@ function NewTicket({ flash, preMember, onCreated }) {
 
   useEffect(() => {
     api.members().then(setMembers).catch(() => setMembers([]))
-    // owner = manager only (cannot take jobs) → technician picker = staff only
-    api.authUsers().then((us) => setTechs((us || []).filter((u) => u.role === 'staff'))).catch(() => setTechs([]))
+    // technician picker = staff who are checked in today (attendance.staff is already staff-only)
+    api.attendanceToday()
+      .then((d) => setTechs((d.staff || []).filter((s) => s.checked_in).map((s) => ({ id: s.user_id, name: s.name }))))
+      .catch(() => setTechs([]))
     api.queue()
       .then((q) => {
         const map = {}
@@ -1103,6 +1183,7 @@ function NewTicket({ flash, preMember, onCreated }) {
           )
         })}
       </select>
+      {techs.length === 0 && <div className="meta" style={{ marginTop: 4 }}>ยังไม่มีพนักงานเข้างาน</div>}
       {selBusy && (
         <div className="note-warn">
           <Icon name="alert-triangle" size={18} className="ico-inline" /> ช่างไม่ว่างถึง {fmtTime(selBusy.busy_until)} — มอบหมายได้ (เข้าคิว)
@@ -1218,8 +1299,10 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
       else { setLoadErr('โหลดบิลไม่สำเร็จ'); flash('โหลดบิลไม่สำเร็จ') }
     })
     api.services().then(setServices).catch(() => setServices([]))
-    // owner = manager only (cannot take jobs) → start/assign picker = staff only
-    api.authUsers().then((us) => setTechs((us || []).filter((u) => u.role === 'staff'))).catch(() => setTechs([]))
+    // start/assign picker = staff who are checked in today (attendance.staff is already staff-only)
+    api.attendanceToday()
+      .then((d) => setTechs((d.staff || []).filter((s) => s.checked_in).map((s) => ({ id: s.user_id, name: s.name }))))
+      .catch(() => setTechs([]))
     // know if this shop has a paired EDC device → drives default Bolt mode (PAIRING) + QR fallback offer
     api.boltConnection().then((c) => setBoltPaired(!!(c && c.paired))).catch(() => setBoltPaired(false))
   }, [id])
@@ -1317,6 +1400,7 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   // start work: needs an assigned tech; if none, prompt to pick one
   const startWork = () => {
     if (!t.assigned_user_id) {
+      if (techs.length === 0) { flash('ยังไม่มีพนักงานเข้างาน'); return }
       const names = techs.map((u, i) => `${i + 1}. ${u.name}`).join('\n')
       const pick = typeof window !== 'undefined'
         ? window.prompt('ยังไม่ได้มอบหมายช่าง — พิมพ์เลขช่างเพื่อเริ่มงาน:\n' + names)

@@ -192,6 +192,15 @@ async function verifyOwnerPin(storeId, pin) {
   return owners.some((o) => verifyPin(pin, o.pin_hash));
 }
 
+// §v1.5 — is this user checked in (and not checked out) for today?
+async function isCheckedIn(storeId, userId) {
+  const row = (await q(
+    `SELECT check_in_at, check_out_at FROM attendance
+      WHERE store_id=$1 AND user_id=$2 AND day=CURRENT_DATE`,
+    [storeId, userId])).rows[0];
+  return !!(row && row.check_in_at && !row.check_out_at);
+}
+
 // todayUsage: how many `kind` actions this user has logged today (0 if none).
 async function todayUsage(storeId, userId, kind) {
   const row = (await q(
@@ -1271,6 +1280,74 @@ app.get('/api/usage/today', async (req, res) => {
   res.json({ discount, staff_price, override });
 });
 
+// §v1.5 — attendance (daily check-in/out). "Working today" = a CURRENT_DATE row
+// with check_in_at set and check_out_at null. Only such staff appear in the queue
+// + tech pickers and may be assigned/started.
+//
+// GET today's attendance: every authed user gets `me` (their own status) + the
+// full `staff` list with each one's status (operational info within the store, so
+// pickers can offer only checked-in staff). Owner uses the list for management.
+app.get('/api/attendance/today', async (req, res) => {
+  const storeId = req.user.storeId;
+  const rows = (await q(
+    `SELECT u.id AS user_id, u.name, u.active,
+            a.check_in_at, a.check_out_at
+       FROM app_user u
+       LEFT JOIN attendance a
+         ON a.user_id = u.id AND a.store_id = u.store_id AND a.day = CURRENT_DATE
+      WHERE u.store_id=$1 AND u.role='staff' AND u.active
+      ORDER BY u.name`, [storeId])).rows;
+  const staff = rows.map(r => ({
+    user_id: r.user_id, name: r.name,
+    checked_in: !!(r.check_in_at && !r.check_out_at),
+    check_in_at: r.check_in_at, check_out_at: r.check_out_at,
+  }));
+  const mine = staff.find(s => s.user_id === req.user.id) || null;
+  res.json({ me: mine || { user_id: req.user.id, checked_in: false }, staff });
+});
+
+// Resolve the attendance target: staff may only act on themselves; an owner may
+// pass user_id to check a staff member in/out on their behalf.
+function attendanceTarget(req) {
+  const bodyId = req.body && req.body.user_id;
+  if (req.user.role === 'owner' && bodyId != null && bodyId !== '') return Number(bodyId);
+  return req.user.id;
+}
+
+app.post('/api/attendance/check-in', async (req, res) => {
+  const userId = attendanceTarget(req);
+  // target must be a staff in this store (owner checks themselves in via no-op? —
+  // owner doesn't take jobs, so attendance is for staff only).
+  const u = (await q(
+    "SELECT id FROM app_user WHERE id=$1 AND store_id=$2 AND role='staff' AND active",
+    [userId, req.user.storeId])).rows[0];
+  if (!u) return res.status(404).json({ error: 'staff not found' });
+  await q(
+    `INSERT INTO attendance (store_id, user_id, day, check_in_at, check_out_at)
+     VALUES ($1,$2,CURRENT_DATE, now(), NULL)
+     ON CONFLICT (store_id, user_id, day)
+       DO UPDATE SET check_in_at=now(), check_out_at=NULL`,
+    [req.user.storeId, userId]);
+  await audit(req.user.id, req.user.storeId, 'attendance_check_in', 'app_user', userId, null);
+  res.json({ ok: true, user_id: userId, checked_in: true });
+});
+
+app.post('/api/attendance/check-out', async (req, res) => {
+  const userId = attendanceTarget(req);
+  const u = (await q(
+    "SELECT id FROM app_user WHERE id=$1 AND store_id=$2 AND role='staff' AND active",
+    [userId, req.user.storeId])).rows[0];
+  if (!u) return res.status(404).json({ error: 'staff not found' });
+  await q(
+    `INSERT INTO attendance (store_id, user_id, day, check_in_at, check_out_at)
+     VALUES ($1,$2,CURRENT_DATE, NULL, now())
+     ON CONFLICT (store_id, user_id, day)
+       DO UPDATE SET check_out_at=now()`,
+    [req.user.storeId, userId]);
+  await audit(req.user.id, req.user.storeId, 'attendance_check_out', 'app_user', userId, null);
+  res.json({ ok: true, user_id: userId, checked_in: false });
+});
+
 // LINE confirm (mocked)
 app.post('/api/tickets/:id/quote/send', async (req, res) => {
   if (!(await guardTicket(req, res))) return; // §v1.4 staff → own bills only
@@ -1569,6 +1646,9 @@ app.put('/api/tickets/:id/assign', async (req, res) => {
     // owner = manager only, cannot take jobs.
     if (tech.role === 'owner')
       return res.status(400).json({ error: 'owner cannot take jobs / เจ้าของร้านรับงานไม่ได้' });
+    // §v1.5 — can't assign a staff who hasn't checked in today.
+    if (!(await isCheckedIn(req.user.storeId, assigned_user_id)))
+      return res.status(400).json({ error: 'พนักงานยังไม่ได้เข้างานวันนี้' });
   }
   await q('UPDATE ticket SET assigned_user_id=$2 WHERE id=$1 AND store_id=$3',
     [req.params.id, assigned_user_id || null, req.user.storeId]);
@@ -1594,6 +1674,9 @@ app.post('/api/tickets/:id/start', async (req, res) => {
     // owner = manager only, cannot take jobs.
     if (techRow.role === 'owner')
       return res.status(400).json({ error: 'owner cannot take jobs / เจ้าของร้านรับงานไม่ได้' });
+    // §v1.5 — can't start a job on a staff who hasn't checked in today.
+    if (!(await isCheckedIn(req.user.storeId, tech)))
+      return res.status(400).json({ error: 'พนักงานยังไม่ได้เข้างานวันนี้' });
   }
   await recomputeEstMinutes(req.params.id);
   await q(
@@ -1622,8 +1705,14 @@ app.get('/api/queue', async (req, res) => {
   const storeId = req.user.storeId;
   // §v0.8 — store-scoped technicians + tickets.
   // owner = manager only (cannot take jobs) → exclude from the queue board.
+  // §v1.5 — only staff CHECKED IN today (and not checked out) appear in the queue.
   const techs = (await q(
-    "SELECT id, name, role FROM app_user WHERE active AND store_id=$1 AND role <> 'owner' ORDER BY role, name",
+    `SELECT u.id, u.name, u.role
+       FROM app_user u
+       JOIN attendance a ON a.user_id=u.id AND a.store_id=u.store_id AND a.day=CURRENT_DATE
+      WHERE u.active AND u.store_id=$1 AND u.role <> 'owner'
+        AND a.check_in_at IS NOT NULL AND a.check_out_at IS NULL
+      ORDER BY u.role, u.name`,
     [storeId])).rows;
   // Live open/in_progress tickets with member name for labels.
   const tickets = (await q(

@@ -138,6 +138,10 @@ export const api = {
   getStaffSettings: () => j('/api/settings/staff'),
   updateStaffSettings: (userId, body) => j(`/api/settings/staff/${userId}`, { method: 'PUT', body: JSON.stringify(body) }),
   usageToday: () => j('/api/usage/today'),
+  // §v1.5 attendance: { me:{checked_in,...}, staff:[{user_id,name,checked_in,...}] }
+  attendanceToday: () => j('/api/attendance/today'),
+  checkIn: (userId) => j('/api/attendance/check-in', { method: 'POST', body: JSON.stringify(userId ? { user_id: userId } : {}) }),
+  checkOut: (userId) => j('/api/attendance/check-out', { method: 'POST', body: JSON.stringify(userId ? { user_id: userId } : {}) }),
 
   /* ── technician queue + assignment + start ── */
   queue: () => j('/api/queue'),
