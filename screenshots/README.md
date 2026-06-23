@@ -37,6 +37,13 @@ as **owner**.
 | 28 | `28-assign-busy-warning.png` | New ticket — assign technician + busy warning (override ok) |
 | 29 | `29-ticket-time-tech.png` | Ticket — per-item ⏱️ minutes, est total, assigned tech, ▶️ start |
 | 30 | `30-ticket-started-locked.png` | After start — เสร็จโดยประมาณ HH:MM (tech locked) |
+| 31 | `31-staff-iphone-lean.png` | staff iPhone — lean dashboard, big tap targets, no admin KPIs (v0.5) |
+| 32 | `32-staff-iphone-ticket.png` | staff iPhone — lean checkout (big steppers + pay) |
+| 33 | `33-owner-iphone-readonly.png` | owner on phone (<768) — read-only + "เปิดบน iPad/คอม" hint |
+| 34 | `34-owner-ipad-users-table.png` | owner iPad (≥768) — Users table + manage actions |
+| 35 | `35-owner-ipad-dashboard.png` | owner iPad — wide 4-across KPI dashboard |
+| 36 | `36-owner-desktop-services-table.png` | owner desktop (1280) — Services table + แก้ราคา |
+| 37 | `37-owner-desktop-audit-table.png` | owner desktop — Audit log table + filters |
 
 > **RBAC (v0.4)**: PIN login per user (scrypt-hashed — separate from the SACRED
 > idempotency hash), in-memory session token sent as `Authorization: Bearer`.
@@ -50,6 +57,12 @@ as **owner**.
 > ticket with an assigned technician sets `started_at` → `busy_until = started_at +
 > est_minutes`, locking that tech (🔴 busy) on the queue board until done/closed.
 > Assigning a busy tech warns but allows override (queue).
+>
+> **Responsive by role (v0.5)**: breakpoint 768px. staff = always lean iPhone layout
+> with big tap targets (no admin KPIs); owner ≥768 = wide management (tables for
+> Users/Audit/Services, 4-across dashboard, full actions); owner <768 = read-only
+> summary (all mutate controls hidden + "เปิดบน iPad/คอม" hint). Server RBAC is
+> unchanged — viewport is UX only, not a security boundary.
 >
 > Payment is decoupled from closing the sale (spec §1): EDC failure offers
 > cash / unpaid fallback so a ticket never gets stuck. Beam & LINE are mocked

@@ -5,6 +5,37 @@ const N = (v) => Number(v || 0)
 
 const roleTH = { owner: 'เจ้าของร้าน', staff: 'พนักงาน' }
 
+/* viewport hook: exposes isLarge (≥768px). matchMedia with cleanup. */
+function useViewport() {
+  const query = '(min-width: 768px)'
+  const get = () =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia(query).matches
+      : false
+  const [isLarge, setIsLarge] = useState(get)
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+    const mq = window.matchMedia(query)
+    const onChange = (e) => setIsLarge(e.matches)
+    // addEventListener is the modern API; addListener is the legacy fallback
+    if (mq.addEventListener) mq.addEventListener('change', onChange)
+    else mq.addListener(onChange)
+    setIsLarge(mq.matches)
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener('change', onChange)
+      else mq.removeListener(onChange)
+    }
+  }, [])
+
+  return { isLarge }
+}
+
+/* read-only hint banner shown on management views for owner-on-phone */
+function ManageHint() {
+  return <div className="note-warn manage-hint">📱 เปิดบน iPad/คอมเพื่อจัดการ</div>
+}
+
 // status -> Thai label
 const statusTH = {
   open: 'เปิดบิล',
@@ -19,6 +50,7 @@ export default function App() {
   const [tab, setTab] = useState('dashboard') // dashboard | members | services | tickets | users | audit
   const [view, setView] = useState(null) // null | {kind:'member',id} | {kind:'ticket',id} | {kind:'newTicket'} | {kind:'newMember'} | {kind:'newUser'} | {kind:'editUser',u}
   const [toast, setToast] = useState(null)
+  const { isLarge } = useViewport()
 
   const flash = (msg) => {
     setToast(msg)
@@ -47,6 +79,15 @@ export default function App() {
 
   const role = user.role
   const isOwner = role === 'owner'
+
+  // mode = role × viewport
+  // staff → always phone-lean. owner+large → wide management. owner+phone → read-only summary.
+  const canManage = isOwner && isLarge
+  const lean = !isOwner // staff lean layout on any screen
+  const wide = isOwner && isLarge // owner wide management layout
+  const ownerPhone = isOwner && !isLarge // owner read-only summary
+
+  const appClass = 'app' + (lean ? ' lean' : '') + (wide ? ' wide' : '')
 
   const goTab = (t) => {
     setView(null)
@@ -81,7 +122,7 @@ export default function App() {
   const showFab = !view && (tab === 'dashboard' || tab === 'tickets')
 
   return (
-    <div className="app">
+    <div className={appClass}>
       <div className="topbar">
         {onBack ? (
           <button className="back" onClick={onBack}>‹</button>
@@ -104,7 +145,7 @@ export default function App() {
       <div className="content">
         {view ? (
           view.kind === 'member' ? (
-            <MemberDetail id={view.id} onNewTicket={(mid) => setView({ kind: 'newTicket', preMember: mid })} flash={flash} openTicket={openTicket} />
+            <MemberDetail id={view.id} onNewTicket={(mid) => setView({ kind: 'newTicket', preMember: mid })} flash={flash} openTicket={openTicket} ownerPhone={ownerPhone} />
           ) : view.kind === 'newMember' ? (
             <NewMember flash={flash} onDone={() => { setView(null); setTab('members') }} />
           ) : view.kind === 'newTicket' ? (
@@ -114,20 +155,20 @@ export default function App() {
           ) : view.kind === 'editUser' ? (
             <UserForm flash={flash} u={view.u} onDone={() => { setView(null); setTab('users') }} onCancel={() => setView(null)} />
           ) : (
-            <TicketView id={view.id} flash={flash} isOwner={isOwner} onClosed={() => goTab('tickets')} />
+            <TicketView id={view.id} flash={flash} isOwner={isOwner} canManage={canManage} ownerPhone={ownerPhone} onClosed={() => goTab('tickets')} />
           )
         ) : tab === 'dashboard' ? (
-          <Dashboard flash={flash} openTicket={openTicket} onNewTicket={() => setView({ kind: 'newTicket' })} onNewMember={() => setView({ kind: 'newMember' })} />
+          <Dashboard flash={flash} openTicket={openTicket} canManage={canManage} isOwner={isOwner} wide={wide} onNewTicket={() => setView({ kind: 'newTicket' })} onNewMember={() => setView({ kind: 'newMember' })} />
         ) : tab === 'members' ? (
-          <Members openMember={openMember} onNewMember={() => setView({ kind: 'newMember' })} />
+          <Members openMember={openMember} canManage={canManage} ownerPhone={ownerPhone} onNewMember={() => setView({ kind: 'newMember' })} />
         ) : tab === 'queue' ? (
           <QueueBoard flash={flash} openTicket={openTicket} />
         ) : tab === 'services' ? (
-          <Services flash={flash} isOwner={isOwner} />
+          <Services flash={flash} isOwner={isOwner} canManage={canManage} ownerPhone={ownerPhone} wide={wide} />
         ) : tab === 'users' && isOwner ? (
-          <Users flash={flash} onNewUser={() => setView({ kind: 'newUser' })} onEditUser={(u) => setView({ kind: 'editUser', u })} />
+          <Users flash={flash} canManage={canManage} ownerPhone={ownerPhone} wide={wide} onNewUser={() => setView({ kind: 'newUser' })} onEditUser={(u) => setView({ kind: 'editUser', u })} />
         ) : tab === 'audit' && isOwner ? (
-          <AuditLog flash={flash} />
+          <AuditLog flash={flash} wide={wide} />
         ) : (
           <Tickets openTicket={openTicket} />
         )}
@@ -148,9 +189,12 @@ export default function App() {
           <button className={tab === 'queue' ? 'active' : ''} onClick={() => goTab('queue')}>
             <span className="tico">⏱️</span>คิว
           </button>
-          <button className={tab === 'services' ? 'active' : ''} onClick={() => goTab('services')}>
-            <span className="tico">💅</span>บริการ
-          </button>
+          {/* staff pick services inside a ticket → hide the บริการ tab (lean) */}
+          {isOwner && (
+            <button className={tab === 'services' ? 'active' : ''} onClick={() => goTab('services')}>
+              <span className="tico">💅</span>บริการ
+            </button>
+          )}
           <button className={tab === 'tickets' ? 'active' : ''} onClick={() => goTab('tickets')}>
             <span className="tico">🧾</span>บิล
           </button>
@@ -181,7 +225,7 @@ function StatusBadge({ status }) {
 }
 
 /* ───────────────────────── Dashboard ───────────────────────── */
-function Dashboard({ flash, openTicket, onNewTicket, onNewMember }) {
+function Dashboard({ flash, openTicket, onNewTicket, onNewMember, canManage, isOwner, wide }) {
   const [sum, setSum] = useState(null)
   const [tickets, setTickets] = useState(null)
 
@@ -193,26 +237,31 @@ function Dashboard({ flash, openTicket, onNewTicket, onNewMember }) {
 
   if (!sum) return <Loading />
 
+  // staff = lean: hide management money KPIs. owner (any viewport) sees the stats.
+  const showStats = isOwner
+
   return (
     <>
-      <div className="stats">
-        <div className="stat primary">
-          <div className="v">{baht(sum.revenue)}</div>
-          <div className="l">รายได้วันนี้</div>
+      {showStats && (
+        <div className={'stats' + (wide ? ' wide-grid' : '')}>
+          <div className="stat primary">
+            <div className="v">{baht(sum.revenue)}</div>
+            <div className="l">รายได้วันนี้</div>
+          </div>
+          <div className="stat">
+            <div className="v">{N(sum.txns)}</div>
+            <div className="l">จำนวนบิล</div>
+          </div>
+          <div className="stat">
+            <div className="v">{N(sum.members)}</div>
+            <div className="l">สมาชิก</div>
+          </div>
+          <div className="stat">
+            <div className="v">{N(sum.openTickets)}</div>
+            <div className="l">บิลที่เปิดอยู่</div>
+          </div>
         </div>
-        <div className="stat">
-          <div className="v">{N(sum.txns)}</div>
-          <div className="l">จำนวนบิล</div>
-        </div>
-        <div className="stat">
-          <div className="v">{N(sum.members)}</div>
-          <div className="l">สมาชิก</div>
-        </div>
-        <div className="stat">
-          <div className="v">{N(sum.openTickets)}</div>
-          <div className="l">บิลที่เปิดอยู่</div>
-        </div>
-      </div>
+      )}
 
       <div className="quick">
         <button onClick={onNewTicket}><span className="ico">🧾</span>เปิดบิลใหม่</button>
@@ -242,7 +291,7 @@ function Dashboard({ flash, openTicket, onNewTicket, onNewMember }) {
 }
 
 /* ───────────────────────── Members ───────────────────────── */
-function Members({ openMember, onNewMember }) {
+function Members({ openMember, onNewMember, ownerPhone }) {
   const [list, setList] = useState(null)
   const [q, setQ] = useState('')
 
@@ -255,7 +304,11 @@ function Members({ openMember, onNewMember }) {
 
   return (
     <>
-      <button className="btn" onClick={onNewMember}>➕ เพิ่มสมาชิกใหม่</button>
+      {ownerPhone ? (
+        <ManageHint />
+      ) : (
+        <button className="btn" onClick={onNewMember}>➕ เพิ่มสมาชิกใหม่</button>
+      )}
       <div className="spacer" />
       <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="ค้นหาชื่อ/เบอร์..." />
       <div className="spacer" />
@@ -311,7 +364,7 @@ function NewMember({ flash, onDone }) {
   )
 }
 
-function MemberDetail({ id, flash, onNewTicket, openTicket }) {
+function MemberDetail({ id, flash, onNewTicket, openTicket, ownerPhone }) {
   const [m, setM] = useState(null)
   const [editing, setEditing] = useState(false)
   useEffect(() => {
@@ -347,12 +400,18 @@ function MemberDetail({ id, flash, onNewTicket, openTicket }) {
         {m.notes && <div className="meta" style={{ marginTop: 6 }}>โน้ต: {m.notes}</div>}
       </div>
 
-      <div className="btn-row">
-        <button className="btn" onClick={() => onNewTicket(m.id)}>🧾 เปิดบิลให้ลูกค้านี้</button>
-      </div>
-      <div className="btn-row">
-        <button className="btn ghost" onClick={() => setEditing(true)}>✏️ แก้ไขข้อมูล</button>
-      </div>
+      {ownerPhone ? (
+        <ManageHint />
+      ) : (
+        <>
+          <div className="btn-row">
+            <button className="btn" onClick={() => onNewTicket(m.id)}>🧾 เปิดบิลให้ลูกค้านี้</button>
+          </div>
+          <div className="btn-row">
+            <button className="btn ghost" onClick={() => setEditing(true)}>✏️ แก้ไขข้อมูล</button>
+          </div>
+        </>
+      )}
 
       <div className="section-title">ประวัติการมาใช้บริการ</div>
       {!m.history || m.history.length === 0 ? (
@@ -406,7 +465,7 @@ function EditMember({ m, flash, onSaved, onCancel }) {
 }
 
 /* ───────────────────────── Services ───────────────────────── */
-function Services({ flash, isOwner }) {
+function Services({ flash, isOwner, canManage, ownerPhone, wide }) {
   const [list, setList] = useState(null)
   const [edits, setEdits] = useState({}) // serviceId -> string price
   const [busy, setBusy] = useState(false)
@@ -438,18 +497,63 @@ function Services({ flash, isOwner }) {
 
   const cats = groupByCat(list)
 
+  // owner + large → management table with inline price edit
+  if (wide && canManage) {
+    return (
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>บริการ</th>
+            <th>หมวด</th>
+            <th className="num">เวลา (นาที)</th>
+            <th className="num">ราคา (บาท)</th>
+            <th className="act">จัดการ</th>
+          </tr>
+        </thead>
+        <tbody>
+          {list.map((s) => (
+            <tr key={s.id}>
+              <td className="strong">{s.name}</td>
+              <td>{s.category || 'อื่นๆ'}</td>
+              <td className="num">{N(s.duration_min)}</td>
+              <td className="num">
+                <input
+                  className="cell-input"
+                  type="number"
+                  value={edits[s.id] !== undefined ? edits[s.id] : String(N(s.base_price))}
+                  onChange={(e) => setEdits((p) => ({ ...p, [s.id]: e.target.value }))}
+                />
+              </td>
+              <td className="act">
+                <button
+                  className="btn secondary"
+                  style={{ width: 'auto', padding: '8px 14px' }}
+                  disabled={busy || edits[s.id] === undefined}
+                  onClick={() => commitPrice(s)}
+                >
+                  แก้ราคา
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    )
+  }
+
   return (
     <>
+      {ownerPhone && <ManageHint />}
       {Object.keys(cats).map((cat) => (
         <div key={cat}>
           <div className="section-title">{cat}</div>
           {cats[cat].map((s) => (
-            <div className="svc" key={s.id} style={isOwner ? { flexWrap: 'wrap' } : undefined}>
+            <div className="svc" key={s.id} style={canManage ? { flexWrap: 'wrap' } : undefined}>
               <div className="grow">
                 <span className="name" style={{ fontWeight: 600 }}>{s.name}</span>
                 <div className="meta" style={{ fontSize: 13, color: 'var(--muted)' }}>{N(s.duration_min)} นาที</div>
               </div>
-              {isOwner ? (
+              {canManage ? (
                 <div className="row" style={{ width: '100%', marginTop: 8 }}>
                   <input
                     type="number"
@@ -647,7 +751,9 @@ function NewTicket({ flash, preMember, onCreated }) {
 }
 
 /* ───────────────────────── Ticket / checkout ───────────────────────── */
-function TicketView({ id, flash, isOwner, onClosed }) {
+function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
+  // owner-on-phone = read-only summary: hide all mutate controls
+  const readOnly = !!ownerPhone
   const [t, setT] = useState(null)
   const [services, setServices] = useState([])
   const [busy, setBusy] = useState(false)
@@ -867,17 +973,29 @@ function TicketView({ id, flash, isOwner, onClosed }) {
             {t.est_minutes ? ' (~' + N(t.est_minutes) + ' นาที)' : ''}
           </div>
         )}
-        {!t.started_at && !isClosed && items.length > 0 && (
+        {!readOnly && !t.started_at && !isClosed && items.length > 0 && (
           <div className="btn-row">
             <button className="btn" disabled={busy} onClick={startWork}>▶️ เริ่มงาน</button>
           </div>
         )}
       </div>
 
+      {readOnly && <ManageHint />}
+
       {/* ITEMS in cart */}
       <div className="section-title">รายการในบิล</div>
       {items.length === 0 ? (
-        <div className="empty">ยังไม่มีรายการ — เลือกบริการด้านล่าง</div>
+        <div className="empty">{readOnly ? 'ยังไม่มีรายการ' : 'ยังไม่มีรายการ — เลือกบริการด้านล่าง'}</div>
+      ) : readOnly ? (
+        items.map((it) => (
+          <div className="li" key={it.id}>
+            <div className="grow">
+              <div className="name">{it.service_name} {it.category && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>{it.category}</span>}</div>
+              <div className="meta">จำนวน {N(it.qty)} · ⏱️ {N(it.minutes)} นาที</div>
+            </div>
+            <div className="price">{baht(N(it.quoted_price) * N(it.qty))}</div>
+          </div>
+        ))
       ) : (
         items.map((it) => (
           <div className="card" key={it.id}>
@@ -924,26 +1042,30 @@ function TicketView({ id, flash, isOwner, onClosed }) {
         ))
       )}
 
-      {/* SERVICE PICKER */}
-      <div className="section-title">เพิ่มบริการ</div>
-      {services.length === 0 ? (
-        <div className="empty">ไม่มีบริการ</div>
-      ) : (
-        services.map((s) => {
-          const c = itemCount(s.id)
-          return (
-            <div className="svc" key={s.id}>
-              <div className="grow">
-                <span style={{ fontWeight: 600 }}>{s.name}</span>
-                {s.category && <span className="cat">{s.category}</span>}
-                <div className="meta" style={{ fontSize: 13, color: 'var(--muted)' }}>{baht(s.base_price)} · {N(s.duration_min)} นาที</div>
-              </div>
-              <button disabled={busy || c === 0} onClick={() => removeOneOfService(s)}>−</button>
-              <span style={{ minWidth: 22, textAlign: 'center', fontWeight: 700 }}>{c}</span>
-              <button disabled={busy} onClick={() => addService(s)}>＋</button>
-            </div>
-          )
-        })
+      {/* SERVICE PICKER — hidden in read-only summary */}
+      {!readOnly && (
+        <>
+          <div className="section-title">เพิ่มบริการ</div>
+          {services.length === 0 ? (
+            <div className="empty">ไม่มีบริการ</div>
+          ) : (
+            services.map((s) => {
+              const c = itemCount(s.id)
+              return (
+                <div className="svc" key={s.id}>
+                  <div className="grow">
+                    <span style={{ fontWeight: 600 }}>{s.name}</span>
+                    {s.category && <span className="cat">{s.category}</span>}
+                    <div className="meta" style={{ fontSize: 13, color: 'var(--muted)' }}>{baht(s.base_price)} · {N(s.duration_min)} นาที</div>
+                  </div>
+                  <button disabled={busy || c === 0} onClick={() => removeOneOfService(s)}>−</button>
+                  <span style={{ minWidth: 22, textAlign: 'center', fontWeight: 700 }}>{c}</span>
+                  <button disabled={busy} onClick={() => addService(s)}>＋</button>
+                </div>
+              )
+            })
+          )}
+        </>
       )}
 
       {/* TOTAL */}
@@ -956,8 +1078,8 @@ function TicketView({ id, flash, isOwner, onClosed }) {
       )}
 
       {/* LINE QUOTE STEP */}
-      <div className="section-title">สรุปราคาทาง LINE</div>
-      {!quote ? (
+      {!(readOnly && !quote) && <div className="section-title">สรุปราคาทาง LINE</div>}
+      {readOnly && !quote ? null : !quote ? (
         <button className="btn dark" disabled={busy || items.length === 0} onClick={sendQuote}>
           📲 ส่งสรุปราคาทาง LINE
         </button>
@@ -980,7 +1102,7 @@ function TicketView({ id, flash, isOwner, onClosed }) {
           </div>
           {quote.confirmed_at ? (
             <div className="center muted" style={{ marginTop: 10 }}>ลูกค้ายืนยันแล้ว ✅ ({fmtDate(quote.confirmed_at)})</div>
-          ) : (
+          ) : readOnly ? null : (
             <div className="btn-row">
               <button className="btn" disabled={busy} onClick={confirmQuote}>✅ ลูกค้า Confirm</button>
             </div>
@@ -1013,12 +1135,12 @@ function TicketView({ id, flash, isOwner, onClosed }) {
                       )}
                       <div className="price" style={{ marginLeft: 8 }}>{baht(p.amount)}</div>
                     </div>
-                    {!isVoided && (canRetry || isOwner) && (
+                    {!readOnly && !isVoided && (canRetry || canManage) && (
                       <div className="btn-row" style={{ marginTop: 6 }}>
                         {canRetry && (
                           <button className="btn secondary" style={{ width: 'auto', padding: '8px 14px' }} disabled={busy} onClick={() => retryPay(p)}>🔁 ลองรูดอีกครั้ง</button>
                         )}
-                        {isOwner && (
+                        {canManage && (
                           <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} disabled={busy} onClick={() => voidPay(p)}>ยกเลิก</button>
                         )}
                       </div>
@@ -1035,7 +1157,7 @@ function TicketView({ id, flash, isOwner, onClosed }) {
             </div>
           )}
 
-          {!isPaid && (
+          {!readOnly && !isPaid && (
             edcStep ? (
               <div className="card">
                 <div className="center" style={{ fontSize: 32 }}>💳</div>
@@ -1095,7 +1217,7 @@ function TicketView({ id, flash, isOwner, onClosed }) {
       )}
 
       {/* CLOSE — available once paid OR an unpaid record exists (bill not stuck) */}
-      {(isPaid || payments.length > 0) && (
+      {!readOnly && (isPaid || payments.length > 0) && (
         <div className="btn-row">
           <button className="btn dark" disabled={busy} onClick={closeBill}>🧾 ปิดบิล / Close</button>
         </div>
@@ -1238,35 +1360,70 @@ function Login({ onLoggedIn }) {
 }
 
 /* ───────────────────────── Users (owner) ───────────────────────── */
-function Users({ flash, onNewUser, onEditUser }) {
+function Users({ flash, onNewUser, onEditUser, canManage, ownerPhone, wide }) {
   const [list, setList] = useState(null)
 
   const load = () => api.users().then(setList).catch((e) => { setList([]); flash && flash(e.status === 403 ? e.message : 'โหลดผู้ใช้ไม่สำเร็จ') })
   useEffect(() => { load() }, [])
 
+  if (!list) return <Loading />
+  if (list.length === 0) return <div className="empty"><div className="big">🔑</div>ยังไม่มีผู้ใช้</div>
+
+  // owner + large → management table with inline edit
+  if (wide && canManage) {
+    return (
+      <>
+        <div className="btn-row" style={{ marginTop: 0, marginBottom: 12 }}>
+          <button className="btn" style={{ width: 'auto', padding: '12px 18px' }} onClick={onNewUser}>➕ เพิ่มผู้ใช้ใหม่</button>
+        </div>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>ชื่อ</th>
+              <th>บทบาท</th>
+              <th>สถานะ</th>
+              <th className="act">จัดการ</th>
+            </tr>
+          </thead>
+          <tbody>
+            {list.map((u) => (
+              <tr key={u.id}>
+                <td className="strong" style={u.active === false ? { color: 'var(--muted)', textDecoration: 'line-through' } : undefined}>{u.name}</td>
+                <td><RoleBadge role={u.role} /></td>
+                <td>{u.active === false ? <span className="badge closed">ปิดใช้งาน</span> : <span className="badge done">ใช้งานอยู่</span>}</td>
+                <td className="act">
+                  <button className="btn secondary" style={{ width: 'auto', padding: '8px 14px' }} onClick={() => onEditUser(u)}>แก้ไข</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </>
+    )
+  }
+
+  // owner-phone read-only OR fallback list view
   return (
     <>
-      <button className="btn" onClick={onNewUser}>➕ เพิ่มผู้ใช้ใหม่</button>
-      <div className="spacer" />
-      {!list ? (
-        <Loading />
-      ) : list.length === 0 ? (
-        <div className="empty"><div className="big">🔑</div>ยังไม่มีผู้ใช้</div>
+      {ownerPhone ? (
+        <ManageHint />
       ) : (
-        list.map((u) => (
-          <div className="li" key={u.id} onClick={() => onEditUser(u)}>
-            <div className="avatar">{(u.name || '?').charAt(0).toUpperCase()}</div>
-            <div className="grow">
-              <div className="name" style={u.active === false ? { color: 'var(--muted)', textDecoration: 'line-through' } : undefined}>{u.name}</div>
-              <div className="meta">
-                <RoleBadge role={u.role} />{' '}
-                {u.active === false ? <span className="badge closed">ปิดใช้งาน</span> : <span className="badge done">ใช้งานอยู่</span>}
-              </div>
-            </div>
-            <span className="chev">›</span>
-          </div>
-        ))
+        canManage && <button className="btn" onClick={onNewUser}>➕ เพิ่มผู้ใช้ใหม่</button>
       )}
+      <div className="spacer" />
+      {list.map((u) => (
+        <div className="li" key={u.id} onClick={ownerPhone ? undefined : () => onEditUser(u)} style={ownerPhone ? { cursor: 'default' } : undefined}>
+          <div className="avatar">{(u.name || '?').charAt(0).toUpperCase()}</div>
+          <div className="grow">
+            <div className="name" style={u.active === false ? { color: 'var(--muted)', textDecoration: 'line-through' } : undefined}>{u.name}</div>
+            <div className="meta">
+              <RoleBadge role={u.role} />{' '}
+              {u.active === false ? <span className="badge closed">ปิดใช้งาน</span> : <span className="badge done">ใช้งานอยู่</span>}
+            </div>
+          </div>
+          {!ownerPhone && <span className="chev">›</span>}
+        </div>
+      ))}
     </>
   )
 }
@@ -1359,7 +1516,7 @@ function auditActionTH(a) {
   return map[a] || a
 }
 
-function AuditLog({ flash }) {
+function AuditLog({ flash, wide }) {
   const [list, setList] = useState(null)
   const [filter, setFilter] = useState('')
 
@@ -1370,19 +1527,58 @@ function AuditLog({ flash }) {
     api.audit(params).then(setList).catch((e) => { setList([]); flash && flash(e.status === 403 ? e.message : 'โหลดบันทึกไม่สำเร็จ') })
   }, [filter])
 
+  const filters = (
+    <div className="audit-filters">
+      {AUDIT_FILTERS.map((f) => (
+        <button
+          key={f.v || 'all'}
+          className={'chip' + (filter === f.v ? ' active' : '')}
+          onClick={() => setFilter(f.v)}
+        >
+          {f.l}
+        </button>
+      ))}
+    </div>
+  )
+
+  // owner + large → table layout
+  if (wide) {
+    return (
+      <>
+        {filters}
+        {!list ? (
+          <Loading />
+        ) : list.length === 0 ? (
+          <div className="empty"><div className="big">📜</div>ไม่มีบันทึกกิจกรรม</div>
+        ) : (
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>กิจกรรม</th>
+                <th>รายการ</th>
+                <th>โดย</th>
+                <th>เวลา</th>
+              </tr>
+            </thead>
+            <tbody>
+              {list.map((r) => (
+                <tr key={r.id}>
+                  <td className="strong">{auditActionTH(r.action)}</td>
+                  <td>{(r.entity || '') + (r.entity_id ? ' #' + r.entity_id : '') || '-'}</td>
+                  <td>{r.actor_name || '-'}</td>
+                  <td>{fmtDate(r.created_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </>
+    )
+  }
+
   return (
     <>
-      <div className="audit-filters">
-        {AUDIT_FILTERS.map((f) => (
-          <button
-            key={f.v || 'all'}
-            className={'chip' + (filter === f.v ? ' active' : '')}
-            onClick={() => setFilter(f.v)}
-          >
-            {f.l}
-          </button>
-        ))}
-      </div>
+      {filters}
 
       {!list ? (
         <Loading />
