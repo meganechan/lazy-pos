@@ -139,6 +139,8 @@ export const api = {
   updateStaffSettings: (userId, body) => j(`/api/settings/staff/${userId}`, { method: 'PUT', body: JSON.stringify(body) }),
   usageToday: () => j('/api/usage/today'),
   // §v1.5 attendance: { me:{checked_in,...}, staff:[{user_id,name,checked_in,...}] }
+  // §v1.6 owner sales report (read-only aggregates). from/to = YYYY-MM-DD.
+  reports: (from, to) => j('/api/reports' + ((from || to) ? `?from=${from || ''}&to=${to || ''}` : '')),
   attendanceToday: () => j('/api/attendance/today'),
   checkIn: (userId) => j('/api/attendance/check-in', { method: 'POST', body: JSON.stringify(userId ? { user_id: userId } : {}) }),
   checkOut: (userId) => j('/api/attendance/check-out', { method: 'POST', body: JSON.stringify(userId ? { user_id: userId } : {}) }),

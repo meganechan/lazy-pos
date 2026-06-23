@@ -170,6 +170,7 @@ export default function App() {
     else if (tab === 'services') { title = 'บริการ'; sub = 'Services' }
     else if (tab === 'tickets') { title = 'บิลทั้งหมด'; sub = 'Tickets' }
     else if (tab === 'users') { title = 'จัดการผู้ใช้'; sub = 'Users' }
+    else if (tab === 'reports') { title = 'รายงาน'; sub = 'Report' }
     else if (tab === 'audit') { title = 'บันทึกกิจกรรม'; sub = 'Audit log' }
     else if (tab === 'settings') { title = 'ตั้งค่า'; sub = 'Settings' }
   }
@@ -223,6 +224,8 @@ export default function App() {
           <Services flash={flash} isOwner={isOwner} canManage={canManage} ownerPhone={ownerPhone} wide={wide} />
         ) : tab === 'users' && isOwner ? (
           <Users flash={flash} canManage={canManage} ownerPhone={ownerPhone} wide={wide} onNewUser={() => setView({ kind: 'newUser' })} onEditUser={(u) => setView({ kind: 'editUser', u })} />
+        ) : tab === 'reports' && isOwner ? (
+          <Report flash={flash} />
         ) : tab === 'audit' && isOwner ? (
           <AuditLog flash={flash} wide={wide} />
         ) : tab === 'settings' && isOwner ? (
@@ -259,6 +262,11 @@ export default function App() {
           {isOwner && (
             <button className={tab === 'users' ? 'active' : ''} onClick={() => goTab('users')}>
               <span className="tico"><Icon name="key" /></span>ผู้ใช้
+            </button>
+          )}
+          {isOwner && (
+            <button className={tab === 'reports' ? 'active' : ''} onClick={() => goTab('reports')}>
+              <span className="tico"><Icon name="banknote" /></span>รายงาน
             </button>
           )}
           {isOwner && (
@@ -2895,6 +2903,256 @@ function UserForm({ flash, u, onDone, onCancel }) {
         <button className="btn" disabled={saving} onClick={save}>{saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
       </div>
     </div>
+  )
+}
+
+/* ───────────────────────── Report (owner) ───────────────────────── */
+// method code -> Thai label
+const REPORT_METHOD_TH = { cash: 'เงินสด', beam_edc: 'บัตร/EDC' }
+
+// local date -> 'YYYY-MM-DD' (browser-local, padded)
+function ymd(d) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+// compute {from,to} for a preset key
+function reportRange(preset) {
+  const now = new Date()
+  const today = ymd(now)
+  if (preset === 'today') return { from: today, to: today }
+  if (preset === 'week') {
+    const d = new Date(now)
+    // Monday of current week (getDay: 0=Sun..6=Sat)
+    const dow = (d.getDay() + 6) % 7 // 0=Mon..6=Sun
+    d.setDate(d.getDate() - dow)
+    return { from: ymd(d), to: today }
+  }
+  if (preset === 'month') {
+    const d = new Date(now.getFullYear(), now.getMonth(), 1)
+    return { from: ymd(d), to: today }
+  }
+  return { from: today, to: today } // custom defaults to today until edited
+}
+
+function Report({ flash }) {
+  const [preset, setPreset] = useState('today')
+  const [from, setFrom] = useState(() => reportRange('today').from)
+  const [to, setTo] = useState(() => reportRange('today').to)
+  const [data, setData] = useState(null)
+
+  const load = (f, t) => {
+    setData(null)
+    api.reports(f, t).then(setData).catch((e) => { setData(false); flash && flash(e.status === 403 ? e.message : 'โหลดรายงานไม่สำเร็จ') })
+  }
+
+  // on mount: load today
+  useEffect(() => { load(from, to) }, [])
+
+  const pickPreset = (p) => {
+    setPreset(p)
+    if (p === 'custom') return // wait for date inputs
+    const r = reportRange(p)
+    setFrom(r.from)
+    setTo(r.to)
+    load(r.from, r.to)
+  }
+
+  const onCustomFrom = (v) => {
+    setFrom(v)
+    if (v && to) load(v, to)
+  }
+  const onCustomTo = (v) => {
+    setTo(v)
+    if (from && v) load(from, v)
+  }
+
+  const presets = [
+    { v: 'today', l: 'วันนี้' },
+    { v: 'week', l: 'สัปดาห์นี้' },
+    { v: 'month', l: 'เดือนนี้' },
+    { v: 'custom', l: 'กำหนดเอง' },
+  ]
+
+  const filterBar = (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        {presets.map((p) => (
+          <button
+            key={p.v}
+            className={'btn ' + (preset === p.v ? 'secondary' : 'ghost')}
+            style={{ width: 'auto', padding: '8px 14px' }}
+            onClick={() => pickPreset(p.v)}
+          >
+            {p.l}
+          </button>
+        ))}
+      </div>
+      {preset === 'custom' && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginTop: 10 }}>
+          <input type="date" value={from} onChange={(e) => onCustomFrom(e.target.value)} style={{ width: 'auto' }} />
+          <span className="meta">ถึง</span>
+          <input type="date" value={to} onChange={(e) => onCustomTo(e.target.value)} style={{ width: 'auto' }} />
+        </div>
+      )}
+    </div>
+  )
+
+  if (data === null) return <>{filterBar}<Loading /></>
+  if (data === false) return <>{filterBar}<div className="empty"><div className="big"><Icon name="banknote" size={32} /></div>โหลดรายงานไม่สำเร็จ</div></>
+
+  const totals = data.totals || {}
+  const byMethod = data.by_method || []
+  const outstanding = data.outstanding || {}
+  const byStaff = data.by_staff || []
+  const byService = data.by_service || []
+  const discounts = data.discounts || {}
+  const daily = data.daily || []
+  const noRevenue = N(totals.revenue) === 0 && N(totals.paid_bills) === 0
+  const maxDaily = daily.reduce((m, d) => Math.max(m, N(d.amount)), 0)
+
+  return (
+    <>
+      {filterBar}
+
+      {/* 1. สรุปยอด */}
+      <div className="card" style={{ marginBottom: 12 }}>
+        <h3 style={{ margin: '0 0 10px' }}>สรุปยอด</h3>
+        <div className="stats">
+          <div className="stat primary">
+            <div className="v">{baht(totals.revenue)}</div>
+            <div className="l">ยอดขายรวม</div>
+          </div>
+          <div className="stat">
+            <div className="v">{N(totals.paid_bills)}</div>
+            <div className="l">จำนวนบิล</div>
+          </div>
+          <div className="stat">
+            <div className="v">{baht(totals.avg_per_bill)}</div>
+            <div className="l">เฉลี่ย/บิล</div>
+          </div>
+        </div>
+        <div className="meta" style={{ marginTop: 8, color: 'var(--muted)' }}>นับเฉพาะบิลที่ชำระแล้ว</div>
+      </div>
+
+      {/* 2. แยกตามวิธีจ่าย */}
+      <div className="card" style={{ marginBottom: 12 }}>
+        <h3 style={{ margin: '0 0 10px' }}>แยกตามวิธีจ่าย</h3>
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>วิธีจ่าย</th>
+              <th className="num">ยอด</th>
+              <th className="num">บิล</th>
+            </tr>
+          </thead>
+          <tbody>
+            {byMethod.map((m) => (
+              <tr key={m.method}>
+                <td className="strong">{REPORT_METHOD_TH[m.method] || m.method}</td>
+                <td className="num tnum">{baht(m.amount)}</td>
+                <td className="num tnum">{N(m.count)}</td>
+              </tr>
+            ))}
+            <tr style={{ color: 'var(--muted)' }}>
+              <td>ค้างชำระ (ยังไม่จ่าย)</td>
+              <td className="num tnum">{baht(outstanding.amount)}</td>
+              <td className="num tnum">{N(outstanding.count)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      {/* 3. แยกตามพนักงาน */}
+      <div className="card" style={{ marginBottom: 12 }}>
+        <h3 style={{ margin: '0 0 10px' }}>แยกตามพนักงาน</h3>
+        {byStaff.length === 0 ? (
+          <div className="meta" style={{ color: 'var(--muted)' }}>ไม่มีข้อมูลในช่วงนี้</div>
+        ) : (
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>พนักงาน</th>
+                <th className="num">ยอด</th>
+                <th className="num">บิล</th>
+              </tr>
+            </thead>
+            <tbody>
+              {byStaff.map((s) => (
+                <tr key={s.user_id ?? s.name}>
+                  <td className="strong">{!s.name || s.name === '—' ? 'ไม่ระบุ' : s.name}</td>
+                  <td className="num tnum">{baht(s.amount)}</td>
+                  <td className="num tnum">{N(s.bills)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* 4. แยกตามบริการ */}
+      <div className="card" style={{ marginBottom: 12 }}>
+        <h3 style={{ margin: '0 0 10px' }}>บริการขายดี</h3>
+        {byService.length === 0 ? (
+          <div className="meta" style={{ color: 'var(--muted)' }}>ไม่มีข้อมูลในช่วงนี้</div>
+        ) : (
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>บริการ</th>
+                <th className="num">ยอด</th>
+                <th className="num">จำนวน</th>
+              </tr>
+            </thead>
+            <tbody>
+              {byService.map((s) => (
+                <tr key={s.service_id ?? s.name}>
+                  <td className="strong">
+                    {s.name}
+                    {s.category && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6, marginLeft: 6 }}>{s.category}</span>}
+                  </td>
+                  <td className="num tnum">{baht(s.amount)}</td>
+                  <td className="num tnum">{N(s.qty)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {/* 5. ส่วนลดที่ให้ */}
+      <div className="card" style={{ marginBottom: 12 }}>
+        <h3 style={{ margin: '0 0 6px' }}>ส่วนลดที่ให้</h3>
+        <div className="price tnum" style={{ fontSize: 22, fontWeight: 800, color: 'var(--rose-dark)' }}>{baht(discounts.total)}</div>
+        <div className="meta" style={{ color: 'var(--muted)' }}>ลด {N(discounts.events)} ครั้ง</div>
+      </div>
+
+      {/* 6. แนวโน้มรายวัน */}
+      <div className="card" style={{ marginBottom: 12 }}>
+        <h3 style={{ margin: '0 0 10px' }}>แนวโน้มรายวัน</h3>
+        {daily.length === 0 ? (
+          <div className="meta" style={{ color: 'var(--muted)' }}>ไม่มีข้อมูลในช่วงนี้</div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {daily.map((d) => (
+              <div key={d.day} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div className="meta tnum" style={{ width: 92, flex: 'none', color: 'var(--muted)' }}>{d.day}</div>
+                <div style={{ flex: 1, background: 'var(--rose-soft)', borderRadius: 6, height: 18, overflow: 'hidden' }}>
+                  <div style={{ width: (maxDaily > 0 ? (N(d.amount) / maxDaily * 100) : 0) + '%', background: 'var(--accent)', height: '100%', borderRadius: 6 }} />
+                </div>
+                <div className="price tnum" style={{ width: 96, flex: 'none', textAlign: 'right' }}>{baht(d.amount)}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {noRevenue && (
+        <div className="empty"><div className="big"><Icon name="banknote" size={32} /></div>ไม่มีข้อมูลในช่วงนี้</div>
+      )}
+    </>
   )
 }
 
