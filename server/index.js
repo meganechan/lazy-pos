@@ -941,8 +941,9 @@ app.get('/api/queue', async (req, res) => {
   const now = Date.now();
   const storeId = req.user.storeId;
   // §v0.8 — store-scoped technicians + tickets.
+  // owner = manager only (cannot take jobs) → exclude from the queue board.
   const techs = (await q(
-    'SELECT id, name, role FROM app_user WHERE active AND store_id=$1 ORDER BY role, name',
+    "SELECT id, name, role FROM app_user WHERE active AND store_id=$1 AND role <> 'owner' ORDER BY role, name",
     [storeId])).rows;
   // Live open/in_progress tickets with member name for labels.
   const tickets = (await q(

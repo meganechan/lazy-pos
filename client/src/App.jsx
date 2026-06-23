@@ -858,7 +858,9 @@ function QueueBoard({ flash, openTicket }) {
 
   if (!q) return <Loading />
 
-  const techs = q.technicians || []
+  // owner = manager only (cannot take jobs) → never show on the queue board
+  // (server already excludes them; this is a belt-and-suspenders guard).
+  const techs = (q.technicians || []).filter((t) => t.role !== 'owner')
   const waiting = q.waiting || []
 
   return (
