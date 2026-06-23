@@ -978,7 +978,8 @@ function NewTicket({ flash, preMember, onCreated }) {
 
   useEffect(() => {
     api.members().then(setMembers).catch(() => setMembers([]))
-    api.authUsers().then(setTechs).catch(() => setTechs([]))
+    // owner = manager only (cannot take jobs) → technician picker = staff only
+    api.authUsers().then((us) => setTechs((us || []).filter((u) => u.role === 'staff'))).catch(() => setTechs([]))
     api.queue()
       .then((q) => {
         const map = {}
@@ -1084,7 +1085,8 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   useEffect(() => {
     api.ticket(id).then(setT).catch(() => flash('โหลดบิลไม่สำเร็จ'))
     api.services().then(setServices).catch(() => setServices([]))
-    api.authUsers().then(setTechs).catch(() => setTechs([]))
+    // owner = manager only (cannot take jobs) → start/assign picker = staff only
+    api.authUsers().then((us) => setTechs((us || []).filter((u) => u.role === 'staff'))).catch(() => setTechs([]))
   }, [id])
 
   if (!t) return <Loading />
