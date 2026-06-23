@@ -1,0 +1,28 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: lazy
+      POSTGRES_PASSWORD: lazy
+      POSTGRES_DB: lazypos
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lazy -d lazypos"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "5432:5432"
+
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgres://lazy:lazy@db:5432/lazypos
+      PORT: 8080
+      # BEAM_API_KEY is referenced by the Beam adapter (mocked in this demo).
+      # Real value must come from a gitignored env / secret — never commit it.
+      BEAM_API_KEY: ${BEAM_API_KEY:-demo-not-set}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
