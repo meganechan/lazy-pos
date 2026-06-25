@@ -86,6 +86,15 @@ h1, h2, .name, .section-title { font-family: var(--font-display); }
   position: relative;
 }
 
+/* main column wrapper (topbar + content + bottom nav). On phone it simply fills
+   the app column; on owner-wide it sits to the right of the sidebar (see ≥768). */
+.app-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 /* top bar */
 .topbar {
   position: sticky; top: 0; z-index: 20;
@@ -273,6 +282,35 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 .tabbar .tico { display: inline-flex; align-items: center; justify-content: center; line-height: 0; }
 .tabbar .tico .icon { width: 22px; height: 22px; }
 
+/* ───────────────────────── "เพิ่มเติม" overflow bottom sheet (owner phone) ─────────────────────────
+   Slide-up modal dialog listing the owner overflow tabs. Backdrop dims the page;
+   click-backdrop / Escape close it (Escape wired in JS). No required animation —
+   function never depends on the transition (reduced-motion safe). */
+.sheet-bg { position: fixed; inset: 0; background: rgba(24,24,27,.45); z-index: 40; }
+.sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 41;
+  max-width: 480px; margin: 0 auto;
+  background: var(--surface);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  box-shadow: var(--shadow-lg);
+  padding: var(--space-2) var(--space-4) calc(var(--space-5) + env(safe-area-inset-bottom));
+  /* contain scroll/overscroll + disable double-tap zoom delay on taps */
+  overscroll-behavior: contain;
+  touch-action: manipulation;
+}
+.sheet-grip { width: 40px; height: 4px; border-radius: 2px; background: var(--line);
+  margin: var(--space-2) auto var(--space-3); }
+.sheet-item { display: flex; align-items: center; gap: 14px; width: 100%;
+  background: none; border: none; text-align: left;
+  padding: 15px var(--space-2); font-size: 16px; font-weight: 600; color: var(--ink);
+  border-bottom: 1px solid var(--line); cursor: pointer; }
+.sheet-item:last-child { border-bottom: none; }
+.sheet-item.active { color: var(--rose-dark); }
+.sheet-item .sheet-ico { display: inline-flex; align-items: center; justify-content: center;
+  color: var(--muted); line-height: 0; }
+.sheet-item.active .sheet-ico { color: var(--rose-dark); }
+.tabbar .more-btn.active { color: var(--rose-dark); }
+
 /* fab */
 .fab { position: fixed; bottom: 84px; right: 50%; transform: translateX(220px);
   background: var(--primary); color: var(--on-primary); border: none; width: 56px; height: 56px;
@@ -285,6 +323,9 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   .fab { right: 18px; transform: none; }
   .fab:active { transform: translateY(1px); }
 }
+/* owner-wide: no centered 480 app to anchor against → pin FAB bottom-right */
+.app.wide .fab { right: 28px; bottom: 28px; transform: none; }
+.app.wide .fab:active { transform: translateY(1px); }
 
 /* topbar user chip + logout */
 .userchip { display: flex; align-items: center; gap: 8px; }
@@ -416,9 +457,13 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 
 /* large viewport: owner wide management layout (does NOT apply to .app.lean / staff) */
 @media (min-width: 768px) {
-  /* owner/tablet/desktop: span the FULL viewport width (no narrow cap) */
-  .app.wide { max-width: none; width: 100%; }
-  .app.wide .content { padding: 24px 28px 96px; }
+  /* owner/tablet/desktop: span the FULL viewport width (no narrow cap) and lay
+     out as [ sidebar | main ] instead of a single stacked column */
+  .app.wide { max-width: none; width: 100%; flex-direction: row; align-items: stretch; }
+  /* sidebar replaces the bottom tabbar + topbar for owner-wide */
+  .app.wide .topbar { display: none; }
+  .app.wide .tabbar { display: none; }
+  .app.wide .content { padding: 24px 28px 32px; }
 
   /* wider KPI grid for owner dashboard (4 across) */
   .app.wide .stats.wide-grid { grid-template-columns: repeat(4, 1fr); gap: 14px; }
@@ -430,15 +475,40 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   /* data tables fill the available width */
   .app.wide .data-table { width: 100%; }
 
-  /* tabbar (a child of .app) also spans the full viewport, aligned with content.
-     staff (.lean) stays narrow via the default .tabbar max-width:480. */
-  .app.wide .tabbar { max-width: none; }
+  /* ── left sidebar / rail (owner-wide nav) ── */
+  .sidebar {
+    flex: none; width: 232px; align-self: stretch;
+    position: sticky; top: 0; height: 100vh;
+    display: flex; flex-direction: column;
+    background: var(--primary); color: #fff;
+    padding: 18px 12px calc(18px + env(safe-area-inset-bottom));
+    overflow: auto;
+  }
+  .sidebar-head { display: flex; align-items: center; gap: 9px; padding: 8px 10px 18px; }
+  .sidebar-head .logo { font-size: 26px; }
+  .sidebar-title .t { font-size: 13px; font-weight: 700; line-height: 1.2; }
+  .sidebar-title .s { font-size: 11px; opacity: .7; }
+  .sidebar-nav { display: flex; flex-direction: column; gap: 2px; }
+  .nav-section { font-size: 10px; text-transform: uppercase; letter-spacing: .8px;
+    opacity: .45; margin: 14px 12px 6px; font-weight: 700; }
+  .nav-item {
+    display: flex; align-items: center; gap: 12px; width: 100%;
+    padding: 11px 12px; border: none; background: none; text-align: left;
+    border-radius: var(--radius-sm); cursor: pointer;
+    color: rgba(255,255,255,.75); font-size: 14px; font-weight: 600;
+    font-family: inherit; transition: background .15s ease, color .15s ease;
+  }
+  .nav-item:hover { background: rgba(255,255,255,.08); color: #fff; }
+  .nav-item.active { background: var(--rose); color: #fff; }
+  .nav-item .nav-ico { display: inline-flex; align-items: center; justify-content: center; line-height: 0; }
+  .sidebar-spacer { flex: 1; }
+  .sidebar .logout { margin-top: 8px; }
 }
 
 /* very wide screens: a touch more side padding + roomier KPI grid so the
    owner dashboard uses the available width instead of clustering left */
 @media (min-width: 1280px) {
-  .app.wide .content { padding: 28px 40px 96px; }
+  .app.wide .content { padding: 28px 40px 40px; }
   .app.wide .stats.wide-grid { gap: 18px; }
 }
 
