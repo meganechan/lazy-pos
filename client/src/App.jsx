@@ -836,16 +836,29 @@ function Services({ flash, isOwner, canManage, ownerPhone, wide }) {
   const load = () => api.services(manageMode).then(setList).catch(() => setList([]))
   useEffect(() => { load() }, [manageMode])
 
-  // sub-views (owner-large only)
+  // sub-views (owner-large only). These render via Services' internal `nav` state (not the
+  // top-level `view`), so #26's wide-detail-head doesn't cover them and the hidden topbar
+  // would leave them without a title/back. Reuse the same .wide-detail-head markup here.
   if (manageMode && nav) {
+    const head = (title, sub, back) => wide && (
+      <div className="wide-detail-head">
+        <button className="wide-back" onClick={back} aria-label="กลับ">
+          <Icon name="chevron-left" size={20} />
+        </button>
+        <div className="wide-detail-title">
+          <h2>{title}</h2>
+          {sub && <div className="sub">{sub}</div>}
+        </div>
+      </div>
+    )
     if (nav.kind === 'new') {
-      return <ServiceForm flash={flash} categories={catNames(list || [])} onCancel={() => setNav(null)} onDone={() => { setNav(null); load() }} />
+      return <>{head('เพิ่มบริการ', 'New service', () => setNav(null))}<ServiceForm flash={flash} categories={catNames(list || [])} onCancel={() => setNav(null)} onDone={() => { setNav(null); load() }} /></>
     }
     if (nav.kind === 'edit') {
-      return <ServiceForm flash={flash} s={nav.s} categories={catNames(list || [])} onCancel={() => setNav(null)} onDone={() => { setNav(null); load() }} />
+      return <>{head('แก้ไขบริการ', 'Edit service', () => setNav(null))}<ServiceForm flash={flash} s={nav.s} categories={catNames(list || [])} onCancel={() => setNav(null)} onDone={() => { setNav(null); load() }} /></>
     }
     if (nav.kind === 'detail') {
-      return <ServiceDetail id={nav.id} flash={flash} onBack={() => { setNav(null); load() }} onEdit={(s) => setNav({ kind: 'edit', s })} />
+      return <>{head('รายละเอียดบริการ', 'Service', () => { setNav(null); load() })}<ServiceDetail id={nav.id} flash={flash} onBack={() => { setNav(null); load() }} onEdit={(s) => setNav({ kind: 'edit', s })} /></>
     }
   }
 
