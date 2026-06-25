@@ -282,7 +282,7 @@ export default function App() {
         </div>
       )}
 
-      {toast && <div className="toast">{toast}</div>}
+      {toast && <div className="toast" role="status" aria-live="polite">{toast}</div>}
     </div>
   )
 }
@@ -423,7 +423,7 @@ function Dashboard({ flash, openTicket, onNewTicket, onNewMember, canManage, isO
         <div className="empty"><div className="big"><Icon name="sparkles" size={32} /></div>ยังไม่มีบิลที่เปิดอยู่</div>
       ) : (
         tickets.map((t) => (
-          <div className="li" key={t.id} onClick={() => openTicket(t.id)}>
+          <button type="button" className="li" key={t.id} onClick={() => openTicket(t.id)}>
             <div className="avatar">{(t.member_name || t.staff_name || '?').charAt(0).toUpperCase()}</div>
             <div className="grow">
               <div className="name">{t.member_name || 'ลูกค้าทั่วไป'}</div>
@@ -431,7 +431,7 @@ function Dashboard({ flash, openTicket, onNewTicket, onNewMember, canManage, isO
             </div>
             <div className="price tnum">{baht(t.total)}</div>
             <span className="chev"><Icon name="chevron-right" size={20} /></span>
-          </div>
+          </button>
         ))
       )}
     </>
@@ -458,7 +458,7 @@ function Members({ openMember, onNewMember, ownerPhone }) {
         <button className="btn" onClick={onNewMember}><Icon name="plus" size={20} /> เพิ่มสมาชิกใหม่</button>
       )}
       <div className="spacer" />
-      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="ค้นหาชื่อ/เบอร์..." />
+      <input type="search" aria-label="ค้นหาสมาชิก" value={q} onChange={(e) => setQ(e.target.value)} placeholder="ค้นหาชื่อ/เบอร์..." />
       <div className="spacer" />
       {!list ? (
         <Loading />
@@ -466,14 +466,14 @@ function Members({ openMember, onNewMember, ownerPhone }) {
         <div className="empty"><div className="big"><Icon name="users" size={32} /></div>{q.trim() ? 'ไม่พบสมาชิกที่ค้นหา' : 'ยังไม่มีสมาชิก'}</div>
       ) : (
         list.map((m) => (
-          <div className="li" key={m.id} onClick={() => openMember(m.id)}>
+          <button type="button" className="li" key={m.id} onClick={() => openMember(m.id)}>
             <div className="avatar">{(m.name || '?').charAt(0).toUpperCase()}</div>
             <div className="grow">
               <div className="name">{m.name}</div>
               <div className="meta">{m.phone || 'ไม่มีเบอร์'}</div>
             </div>
             <span className="chev"><Icon name="chevron-right" size={20} /></span>
-          </div>
+          </button>
         ))
       )}
     </>
@@ -497,14 +497,14 @@ function NewMember({ flash, onDone }) {
 
   return (
     <div className="card">
-      <label>ชื่อ *</label>
-      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อลูกค้า" />
-      <label>เบอร์โทร</label>
-      <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="08x-xxx-xxxx" />
-      <label>LINE User ID</label>
-      <input value={line} onChange={(e) => setLine(e.target.value)} placeholder="U1234..." />
-      <label>โน้ต</label>
-      <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="แพ้น้ำยา, ชอบสีแดง ..." />
+      <label htmlFor="member-name">ชื่อ *</label>
+      <input id="member-name" name="name" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อลูกค้า" />
+      <label htmlFor="member-phone">เบอร์โทร</label>
+      <input id="member-phone" name="phone" type="tel" inputMode="tel" autoComplete="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="08x-xxx-xxxx" />
+      <label htmlFor="member-line">LINE User ID</label>
+      <input id="member-line" name="line_user_id" autoComplete="off" value={line} onChange={(e) => setLine(e.target.value)} placeholder="U1234..." />
+      <label htmlFor="member-notes">โน้ต</label>
+      <input id="member-notes" name="notes" autoComplete="off" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="แพ้น้ำยา, ชอบสีแดง ..." />
       <div className="btn-row">
         <button className="btn" disabled={saving} onClick={save}>{saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
       </div>
@@ -566,13 +566,13 @@ function MemberDetail({ id, flash, onNewTicket, openTicket, ownerPhone }) {
         <div className="empty">ยังไม่มีประวัติ</div>
       ) : (
         m.history.map((h) => (
-          <div className="li" key={h.id} onClick={() => openTicket(h.id)}>
+          <button type="button" className="li" key={h.id} onClick={() => openTicket(h.id)}>
             <div className="grow">
               <div className="name">บิล #{h.id}</div>
               <div className="meta">{fmtDate(h.created_at)} · <StatusBadge status={h.status} /></div>
             </div>
             <div className="price tnum">{baht(h.spent)}</div>
-          </div>
+          </button>
         ))
       )}
     </>
@@ -596,14 +596,14 @@ function EditMember({ m, flash, onSaved, onCancel }) {
 
   return (
     <div className="card">
-      <label>ชื่อ *</label>
-      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อลูกค้า" />
-      <label>เบอร์โทร</label>
-      <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="08x-xxx-xxxx" />
-      <label>LINE User ID</label>
-      <input value={line} onChange={(e) => setLine(e.target.value)} placeholder="U1234..." />
-      <label>โน้ต</label>
-      <input value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="แพ้น้ำยา, ชอบสีแดง ..." />
+      <label htmlFor="edit-member-name">ชื่อ *</label>
+      <input id="edit-member-name" name="name" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อลูกค้า" />
+      <label htmlFor="edit-member-phone">เบอร์โทร</label>
+      <input id="edit-member-phone" name="phone" type="tel" inputMode="tel" autoComplete="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="08x-xxx-xxxx" />
+      <label htmlFor="edit-member-line">LINE User ID</label>
+      <input id="edit-member-line" name="line_user_id" autoComplete="off" value={line} onChange={(e) => setLine(e.target.value)} placeholder="U1234..." />
+      <label htmlFor="edit-member-notes">โน้ต</label>
+      <input id="edit-member-notes" name="notes" autoComplete="off" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="แพ้น้ำยา, ชอบสีแดง ..." />
       <div className="btn-row">
         <button className="btn ghost" disabled={saving} onClick={onCancel}>ยกเลิก</button>
         <button className="btn" disabled={saving} onClick={save}>{saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
@@ -709,8 +709,8 @@ function Services({ flash, isOwner, canManage, ownerPhone, wide }) {
             <div className="meta" style={{ marginTop: 4, marginBottom: 12 }}>
               บริการนี้มีประวัติการใช้งานในบิล{migrateFor._count != null ? ' (' + N(migrateFor._count) + ' รายการ)' : ''} จึงลบทันทีไม่ได้ — เลือกย้ายรายการเก่าไปบริการอื่น หรือปิดใช้งานเพื่อเก็บประวัติ
             </div>
-            <label>ย้ายรายการเก่าไปยัง</label>
-            <select value={migrateTo} onChange={(e) => setMigrateTo(e.target.value)} style={{ width: '100%', padding: '13px 14px', borderRadius: 12, border: '1px solid var(--line)', fontSize: 16, fontFamily: 'inherit', background: '#fff', color: 'var(--ink)' }}>
+            <label htmlFor="migrate-to">ย้ายรายการเก่าไปยัง</label>
+            <select id="migrate-to" name="migrate-to" value={migrateTo} onChange={(e) => setMigrateTo(e.target.value)} style={{ width: '100%', padding: '13px 14px', borderRadius: 12, border: '1px solid var(--line)', fontSize: 16, fontFamily: 'inherit', background: '#fff', color: 'var(--ink)' }}>
               <option value="">— เลือกบริการ —</option>
               {(list || []).filter((x) => x.id !== migrateFor.id && x.active !== false).map((x) => (
                 <option key={x.id} value={x.id}>{x.name}</option>
@@ -857,11 +857,11 @@ function ServiceForm({ flash, s, categories, onDone, onCancel }) {
 
   return (
     <div className="card">
-      <label>ชื่อบริการ *</label>
-      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="เช่น ทาเจลสีพื้น" />
+      <label htmlFor="svc-name">ชื่อบริการ *</label>
+      <input id="svc-name" name="service-name" autoComplete="off" value={name} onChange={(e) => setName(e.target.value)} placeholder="เช่น ทาเจลสีพื้น" />
 
-      <label>หมวด</label>
-      <input list="svc-cat-list" value={category} onChange={(e) => setCategory(e.target.value)} placeholder="เช่น เจล, ต่อเล็บ, สปา" />
+      <label htmlFor="svc-category">หมวด</label>
+      <input id="svc-category" name="service-category" autoComplete="off" list="svc-cat-list" value={category} onChange={(e) => setCategory(e.target.value)} placeholder="เช่น เจล, ต่อเล็บ, สปา" />
       <div className="meta" style={{ marginTop: -6, marginBottom: 8 }}>เลือกจากที่มี หรือพิมพ์หมวดใหม่ได้</div>
       <datalist id="svc-cat-list">
         {(categories || []).map((c) => <option key={c} value={c} />)}
@@ -869,23 +869,23 @@ function ServiceForm({ flash, s, categories, onDone, onCancel }) {
 
       <div style={{ display: 'flex', gap: 12 }}>
         <div style={{ flex: 1 }}>
-          <label>ราคา (บาท)</label>
-          <input type="number" value={basePrice} onChange={(e) => setBasePrice(e.target.value)} placeholder="0" />
+          <label htmlFor="svc-base-price">ราคา (บาท)</label>
+          <input id="svc-base-price" name="base-price" type="number" value={basePrice} onChange={(e) => setBasePrice(e.target.value)} placeholder="0" />
         </div>
         <div style={{ flex: 1 }}>
-          <label>ราคาพนักงาน (บาท)</label>
-          <input type="number" value={staffPrice} onChange={(e) => setStaffPrice(e.target.value)} placeholder="0" />
+          <label htmlFor="svc-staff-price">ราคาพนักงาน (บาท)</label>
+          <input id="svc-staff-price" name="staff-price" type="number" value={staffPrice} onChange={(e) => setStaffPrice(e.target.value)} placeholder="0" />
           <div className="meta" style={{ marginTop: -6, marginBottom: 8 }}>ว่าง = ใช้ราคาปกติ</div>
         </div>
         <div style={{ flex: 1 }}>
-          <label>เวลา (นาที)</label>
-          <input type="number" value={durationMin} onChange={(e) => setDurationMin(e.target.value)} placeholder="0" />
+          <label htmlFor="svc-duration">เวลา (นาที)</label>
+          <input id="svc-duration" name="duration-min" type="number" value={durationMin} onChange={(e) => setDurationMin(e.target.value)} placeholder="0" />
           <div className="meta" style={{ marginTop: -6, marginBottom: 8 }}>เวลาโดยประมาณต่อ 1 ครั้ง</div>
         </div>
       </div>
 
-      <label>รายละเอียด</label>
-      <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="รายละเอียดงาน / เงื่อนไข / หมายเหตุ" rows={4} style={{ width: '100%', padding: '13px 14px', borderRadius: 12, border: '1px solid var(--line)', fontSize: 16, fontFamily: 'inherit', background: '#fff', color: 'var(--ink)', resize: 'vertical' }} />
+      <label htmlFor="svc-description">รายละเอียด</label>
+      <textarea id="svc-description" name="service-description" autoComplete="off" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="รายละเอียดงาน / เงื่อนไข / หมายเหตุ" rows={4} style={{ width: '100%', padding: '13px 14px', borderRadius: 12, border: '1px solid var(--line)', fontSize: 16, fontFamily: 'inherit', background: '#fff', color: 'var(--ink)', resize: 'vertical' }} />
 
       <label>สถานะ</label>
       <div className="btn-row" style={{ marginTop: 0 }}>
@@ -978,12 +978,12 @@ function ServiceDetail({ id, flash, onBack, onEdit }) {
             <div className="card" key={o.id}>
               {ed ? (
                 <>
-                  <label>ชื่อ</label>
-                  <input value={ed.name} onChange={(e) => setEditField(o.id, 'name', e.target.value)} />
-                  <label>+ราคา (บาท)</label>
-                  <input type="number" value={ed.price_delta} onChange={(e) => setEditField(o.id, 'price_delta', e.target.value)} />
-                  <label>+เวลา (นาที)</label>
-                  <input type="number" value={ed.minute_delta} onChange={(e) => setEditField(o.id, 'minute_delta', e.target.value)} />
+                  <label htmlFor={`addon-${o.id}-name`}>ชื่อ</label>
+                  <input id={`addon-${o.id}-name`} name={`addon-${o.id}-name`} value={ed.name} onChange={(e) => setEditField(o.id, 'name', e.target.value)} />
+                  <label htmlFor={`addon-${o.id}-price`}>+ราคา (บาท)</label>
+                  <input id={`addon-${o.id}-price`} name={`addon-${o.id}-price`} type="number" value={ed.price_delta} onChange={(e) => setEditField(o.id, 'price_delta', e.target.value)} />
+                  <label htmlFor={`addon-${o.id}-minute`}>+เวลา (นาที)</label>
+                  <input id={`addon-${o.id}-minute`} name={`addon-${o.id}-minute`} type="number" value={ed.minute_delta} onChange={(e) => setEditField(o.id, 'minute_delta', e.target.value)} />
                   <div className="btn-row">
                     <button className="btn ghost" disabled={busy} onClick={() => cancelEdit(o.id)}>ยกเลิก</button>
                     <button className="btn" disabled={busy} onClick={() => saveEdit(o)}>บันทึก</button>
@@ -1009,12 +1009,12 @@ function ServiceDetail({ id, flash, onBack, onEdit }) {
 
       <div className="section-title">เพิ่ม add-on</div>
       <div className="card">
-        <label>ชื่อ add-on</label>
-        <input value={oName} onChange={(e) => setOName(e.target.value)} placeholder="เช่น เพิ่มลาย, ถอดเก่า" />
-        <label>+ราคา (บาท)</label>
-        <input type="number" value={oPrice} onChange={(e) => setOPrice(e.target.value)} placeholder="0" />
-        <label>+เวลา (นาที)</label>
-        <input type="number" value={oMin} onChange={(e) => setOMin(e.target.value)} placeholder="0" />
+        <label htmlFor="new-addon-name">ชื่อ add-on</label>
+        <input id="new-addon-name" name="new-addon-name" autoComplete="off" value={oName} onChange={(e) => setOName(e.target.value)} placeholder="เช่น เพิ่มลาย, ถอดเก่า" />
+        <label htmlFor="new-addon-price">+ราคา (บาท)</label>
+        <input id="new-addon-price" name="new-addon-price" type="number" value={oPrice} onChange={(e) => setOPrice(e.target.value)} placeholder="0" />
+        <label htmlFor="new-addon-minute">+เวลา (นาที)</label>
+        <input id="new-addon-minute" name="new-addon-minute" type="number" value={oMin} onChange={(e) => setOMin(e.target.value)} placeholder="0" />
         <div className="btn-row">
           <button className="btn" disabled={busy} onClick={addOpt}><Icon name="plus" size={20} /> เพิ่ม add-on</button>
         </div>
@@ -1041,7 +1041,7 @@ function Tickets({ openTicket }) {
   return (
     <>
       {list.map((t) => (
-        <div className="li" key={t.id} onClick={() => openTicket(t.id)}>
+        <button type="button" className="li" key={t.id} onClick={() => openTicket(t.id)}>
           <div className="avatar">{(t.member_name || t.staff_name || '?').charAt(0).toUpperCase()}</div>
           <div className="grow">
             <div className="name">{t.member_name || 'ลูกค้าทั่วไป'}</div>
@@ -1049,7 +1049,7 @@ function Tickets({ openTicket }) {
           </div>
           <div className="price tnum">{baht(t.total)}</div>
           <span className="chev"><Icon name="chevron-right" size={20} /></span>
-        </div>
+        </button>
       ))}
     </>
   )
@@ -1110,7 +1110,7 @@ function QueueBoard({ flash, openTicket }) {
         <div className="empty"><div className="big"><Icon name="sparkles" size={32} /></div>ไม่มีงานในคิว</div>
       ) : (
         waiting.map((w) => (
-          <div className="li" key={w.ticket_id} onClick={() => openTicket(w.ticket_id)}>
+          <button type="button" className="li" key={w.ticket_id} onClick={() => openTicket(w.ticket_id)}>
             <div className="avatar">{(w.member_name || '?').charAt(0).toUpperCase()}</div>
             <div className="grow">
               <div className="name">{w.member_name || 'ลูกค้าทั่วไป'}</div>
@@ -1119,7 +1119,7 @@ function QueueBoard({ flash, openTicket }) {
               </div>
             </div>
             <span className="chev"><Icon name="chevron-right" size={20} /></span>
-          </div>
+          </button>
         ))
       )}
     </>
@@ -2141,36 +2141,36 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
               </div>
             ) : (
               <div className="pay-grid">
-                <div className="pay" onClick={() => doPay('cash')}>
+                <button type="button" className="pay" onClick={() => doPay('cash')}>
                   <div className="ico"><Icon name="banknote" size={20} /></div>
                   <div className="grow"><div>เงินสด</div><div className="desc">รับเป็นเงินสด</div></div>
                   <div className="price tnum">{baht(total)}</div>
-                </div>
+                </button>
                 {boltPaired ? (
                   <>
-                    <div className="pay" onClick={() => startBolt('PAIRING', 'CARD')}>
+                    <button type="button" className="pay" onClick={() => startBolt('PAIRING', 'CARD')}>
                       <div className="ico"><Icon name="credit-card" size={20} /></div>
                       <div className="grow"><div>บัตร (รูดที่เครื่อง EDC)</div><div className="desc">เสียบ/แตะบัตรที่เครื่องที่จับคู่ไว้</div></div>
-                    </div>
-                    <div className="pay" onClick={() => startBolt('PAIRING', 'QR_PROMPT_PAY')}>
+                    </button>
+                    <button type="button" className="pay" onClick={() => startBolt('PAIRING', 'QR_PROMPT_PAY')}>
                       <div className="ico"><Icon name="qr-code" size={20} /></div>
                       <div className="grow"><div>QR ที่เครื่อง EDC</div><div className="desc">โชว์ QR PromptPay บนหน้าจอเครื่อง</div></div>
-                    </div>
-                    <div className="pay" onClick={() => startBolt('DEEP_LINK')}>
+                    </button>
+                    <button type="button" className="pay" onClick={() => startBolt('DEEP_LINK')}>
                       <div className="ico"><Icon name="smartphone" size={20} /></div>
                       <div className="grow"><div>QR PromptPay (มือถือ)</div><div className="desc">ให้ลูกค้าสแกนบนมือถือ</div></div>
-                    </div>
+                    </button>
                   </>
                 ) : (
-                  <div className="pay" onClick={() => startBolt('DEEP_LINK')}>
+                  <button type="button" className="pay" onClick={() => startBolt('DEEP_LINK')}>
                     <div className="ico"><Icon name="qr-code" size={20} /></div>
                     <div className="grow"><div>บัตร / QR PromptPay</div><div className="desc">สแกน QR PromptPay เพื่อชำระ</div></div>
-                  </div>
+                  </button>
                 )}
-                <div className="pay" onClick={() => doPay('unpaid')}>
+                <button type="button" className="pay" onClick={() => doPay('unpaid')}>
                   <div className="ico"><Icon name="clock" size={20} /></div>
                   <div className="grow"><div>ค้างชำระ</div><div className="desc">ไว้จ่ายภายหลัง</div></div>
-                </div>
+                </button>
               </div>
             )
           )}
@@ -2327,17 +2327,17 @@ function Settings({ flash }) {
         <h3 style={{ margin: '0 0 8px' }}>ค่าเริ่มต้นทั้งร้าน</h3>
         <div className="meta" style={{ marginBottom: 10 }}>เพดาน/โควต้าที่พนักงานทำได้เองโดยไม่ต้องขออนุมัติเจ้าของ (เจ้าของไม่จำกัด)</div>
 
-        <label>เพดานส่วนลด (%)</label>
-        <input type="number" value={maxPct} onChange={(e) => setMaxPct(e.target.value)} placeholder="0" />
+        <label htmlFor="store-max-pct">เพดานส่วนลด (%)</label>
+        <input id="store-max-pct" name="store-max-pct" type="number" value={maxPct} onChange={(e) => setMaxPct(e.target.value)} placeholder="0" />
 
-        <label>เพดานส่วนลด (บาท)</label>
-        <input type="number" value={maxBaht} onChange={(e) => setMaxBaht(e.target.value)} placeholder="0" />
+        <label htmlFor="store-max-baht">เพดานส่วนลด (บาท)</label>
+        <input id="store-max-baht" name="store-max-baht" type="number" value={maxBaht} onChange={(e) => setMaxBaht(e.target.value)} placeholder="0" />
 
-        <label>โควต้าส่วนลดต่อวัน (ครั้ง)</label>
-        <input type="number" value={discQuota} onChange={(e) => setDiscQuota(e.target.value)} placeholder="0" />
+        <label htmlFor="store-disc-quota">โควต้าส่วนลดต่อวัน (ครั้ง)</label>
+        <input id="store-disc-quota" name="store-disc-quota" type="number" value={discQuota} onChange={(e) => setDiscQuota(e.target.value)} placeholder="0" />
 
-        <label>โควต้าราคาพนักงานต่อวัน (ครั้ง)</label>
-        <input type="number" value={staffQuota} onChange={(e) => setStaffQuota(e.target.value)} placeholder="0" />
+        <label htmlFor="store-staff-quota">โควต้าราคาพนักงานต่อวัน (ครั้ง)</label>
+        <input id="store-staff-quota" name="store-staff-quota" type="number" value={staffQuota} onChange={(e) => setStaffQuota(e.target.value)} placeholder="0" />
 
         {usage && (
           <div className="meta" style={{ marginTop: 10 }}>
@@ -2371,8 +2371,10 @@ function Settings({ flash }) {
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                   {fields.map((f) => (
                     <div key={f.key} style={{ flex: '1 1 120px', minWidth: 120 }}>
-                      <label>{f.label}</label>
+                      <label htmlFor={`staff-${st.user_id}-${f.key}`}>{f.label}</label>
                       <input
+                        id={`staff-${st.user_id}-${f.key}`}
+                        name={`staff-${st.user_id}-${f.key}`}
                         type="number"
                         value={e[f.key] ?? ''}
                         onChange={(ev) => setEdit(st.user_id, f.key, ev.target.value)}
@@ -2575,8 +2577,12 @@ function Login({ onLoggedIn }) {
             </div>
           )}
 
-          <div className="section-title">รหัสร้าน (Shop code)</div>
+          <div className="section-title" id="shop-code-label">รหัสร้าน (Shop code)</div>
           <input
+            id="shop-code"
+            name="shop-code"
+            autoComplete="off"
+            aria-labelledby="shop-code-label"
             value={code}
             onChange={(e) => { setShopErr(''); setCode(e.target.value) }}
             placeholder="เช่น ABCD"
@@ -2598,10 +2604,10 @@ function Login({ onLoggedIn }) {
             <button className="btn ghost" style={{ width: 'auto', padding: '8px 12px' }} onClick={() => { setSignupErr(''); setStep('shop') }}><Icon name="chevron-left" size={20} /> กลับ</button>
           </div>
           <div className="card">
-            <label>ชื่อร้าน *</label>
-            <input value={shopName} onChange={(e) => { setSignupErr(''); setShopName(e.target.value) }} placeholder="เช่น Lazy Nail สาขาทองหล่อ" />
-            <label>ชื่อเจ้าของ *</label>
-            <input value={ownerName} onChange={(e) => { setSignupErr(''); setOwnerName(e.target.value) }} placeholder="ชื่อเจ้าของร้าน" />
+            <label htmlFor="signup-shop-name">ชื่อร้าน *</label>
+            <input id="signup-shop-name" name="shop-name" autoComplete="organization" value={shopName} onChange={(e) => { setSignupErr(''); setShopName(e.target.value) }} placeholder="เช่น Lazy Nail สาขาทองหล่อ" />
+            <label htmlFor="signup-owner-name">ชื่อเจ้าของ *</label>
+            <input id="signup-owner-name" name="owner-name" autoComplete="name" value={ownerName} onChange={(e) => { setSignupErr(''); setOwnerName(e.target.value) }} placeholder="ชื่อเจ้าของร้าน" />
             <label>PIN เจ้าของ (4–6 หลัก) *</label>
             <PinPad
               pin={ownerPin}
@@ -2638,14 +2644,14 @@ function Login({ onLoggedIn }) {
             <div className="empty"><div className="big"><Icon name="lock" size={32} /></div>ยังไม่มีผู้ใช้ในร้านนี้</div>
           ) : (
             users.map((u) => (
-              <div className="li" key={u.id} onClick={() => { setPicked(u); setPin(''); setErr(''); setStep('pin') }}>
+              <button type="button" className="li" key={u.id} onClick={() => { setPicked(u); setPin(''); setErr(''); setStep('pin') }}>
                 <div className="avatar">{(u.name || '?').charAt(0).toUpperCase()}</div>
                 <div className="grow">
                   <div className="name">{u.name}</div>
                   <div className="meta"><RoleBadge role={u.role} /></div>
                 </div>
                 <span className="chev"><Icon name="chevron-right" size={20} /></span>
-              </div>
+              </button>
             ))
           )}
         </div>
@@ -2818,7 +2824,7 @@ function Users({ flash, onNewUser, onEditUser, canManage, ownerPhone, wide }) {
       )}
       <div className="spacer" />
       {list.map((u) => (
-        <div className="li" key={u.id} onClick={ownerPhone ? undefined : () => onEditUser(u)} style={ownerPhone ? { cursor: 'default' } : undefined}>
+        <button type="button" className="li" key={u.id} disabled={ownerPhone} onClick={ownerPhone ? undefined : () => onEditUser(u)} style={ownerPhone ? { cursor: 'default' } : undefined}>
           <div className="avatar">{(u.name || '?').charAt(0).toUpperCase()}</div>
           <div className="grow">
             <div className="name" style={u.active === false ? { color: 'var(--muted)', textDecoration: 'line-through' } : undefined}>{u.name}</div>
@@ -2828,7 +2834,7 @@ function Users({ flash, onNewUser, onEditUser, canManage, ownerPhone, wide }) {
             </div>
           </div>
           {!ownerPhone && <span className="chev"><Icon name="chevron-right" size={20} /></span>}
-        </div>
+        </button>
       ))}
     </>
   )
@@ -2869,19 +2875,21 @@ function UserForm({ flash, u, onDone, onCancel }) {
 
   return (
     <div className="card">
-      <label>ชื่อ *</label>
-      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อผู้ใช้" />
+      <label htmlFor="user-name">ชื่อ *</label>
+      <input id="user-name" name="user-name" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อผู้ใช้" />
 
-      <label>บทบาท (Role)</label>
-      <select value={role} onChange={(e) => setRole(e.target.value)}>
+      <label htmlFor="user-role">บทบาท (Role)</label>
+      <select id="user-role" name="user-role" value={role} onChange={(e) => setRole(e.target.value)}>
         <option value="owner">เจ้าของร้าน (owner)</option>
         <option value="staff">พนักงาน (staff)</option>
       </select>
 
-      <label>{editing ? 'PIN ใหม่ (เว้นว่าง = ไม่เปลี่ยน)' : 'PIN (4–6 หลัก) *'}</label>
+      <label htmlFor="user-pin">{editing ? 'PIN ใหม่ (เว้นว่าง = ไม่เปลี่ยน)' : 'PIN (4–6 หลัก) *'}</label>
       <input
+        id="user-pin"
         type="tel"
         inputMode="numeric"
+        autoComplete="off"
         value={pin}
         onChange={(e) => { setPinErr(''); setPin(e.target.value.replace(/\D/g, '').slice(0, 6)) }}
         placeholder="••••"
