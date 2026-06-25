@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { api, baht, getToken, getUser, setAuth, clearAuth } from './api'
 
 const N = (v) => Number(v || 0)
@@ -37,6 +37,7 @@ const ICONS = {
   'delete': <><path d="M21 4H8L1 12l7 8h13a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2Z" /><line x1="18" y1="9" x2="12" y2="15" /><line x1="12" y1="9" x2="18" y2="15" /></>,
   'send': <><path d="M22 2 11 13" /><path d="M22 2 15 22l-4-9-9-4Z" /></>,
   'qr-code': <><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><path d="M14 14h3v3" /><path d="M21 14v7h-7" /><path d="M17 17h.01" /></>,
+  'more-horizontal': <><circle cx="12" cy="12" r="1.5" /><circle cx="5" cy="12" r="1.5" /><circle cx="19" cy="12" r="1.5" /></>,
 }
 
 function Icon({ name, size = 24, className }) {
@@ -105,6 +106,7 @@ export default function App() {
   const [tab, setTab] = useState('dashboard') // dashboard | members | services | tickets | users | audit | settings
   const [view, setView] = useState(null) // null | {kind:'member',id} | {kind:'ticket',id} | {kind:'newTicket'} | {kind:'newMember'} | {kind:'newUser'} | {kind:'editUser',u}
   const [toast, setToast] = useState(null)
+  const [moreOpen, setMoreOpen] = useState(false) // owner-phone overflow bottom sheet
   const { isLarge } = useViewport()
 
   const flash = (msg) => {
@@ -147,7 +149,25 @@ export default function App() {
   const goTab = (t) => {
     setView(null)
     setTab(t)
+    setMoreOpen(false)
   }
+
+  /* nav model — single source of truth for sidebar + bottom nav + overflow sheet.
+     core = the 4 tabs every role sees in the bottom bar.
+     manage = owner-only "เจ้าของร้าน" destinations (sidebar section / phone overflow sheet). */
+  const NAV_CORE = [
+    { tab: 'dashboard', icon: 'dashboard', label: 'หน้าหลัก' },
+    { tab: 'queue', icon: 'clock', label: 'คิว' },
+    { tab: 'tickets', icon: 'receipt', label: 'บิล' },
+    { tab: 'members', icon: 'users', label: 'สมาชิก' },
+  ]
+  const NAV_MANAGE = [
+    { tab: 'services', icon: 'sparkles', label: 'บริการ' },
+    { tab: 'reports', icon: 'banknote', label: 'รายงาน' },
+    { tab: 'users', icon: 'key', label: 'ผู้ใช้' },
+    { tab: 'audit', icon: 'history', label: 'บันทึก' },
+    { tab: 'settings', icon: 'lock', label: 'ตั้งค่า' },
+  ]
 
   const openTicket = (id) => setView({ kind: 'ticket', id })
   const openMember = (id) => setView({ kind: 'member', id })
@@ -180,6 +200,16 @@ export default function App() {
 
   return (
     <div className={appClass}>
+      {wide && (
+        <Sidebar
+          core={NAV_CORE}
+          manage={NAV_MANAGE}
+          tab={tab}
+          goTab={goTab}
+          onLogout={doLogout}
+        />
+      )}
+      <div className="app-main">
       <div className="topbar">
         {onBack ? (
           <button className="back" onClick={onBack} aria-label="กลับ"><Icon name="chevron-left" size={22} /></button>
@@ -239,51 +269,121 @@ export default function App() {
         <button className="fab" onClick={() => setView({ kind: 'newTicket' })} aria-label="เปิดบิลใหม่"><Icon name="plus" size={28} /></button>
       )}
 
-      {!view && (
+      {/* bottom nav — phone / non-wide only. Sidebar replaces it for owner-wide.
+          Max 5 items: 4 core tabs + (owner) "เพิ่มเติม" overflow. Staff get the 4 core only. */}
+      {!view && !wide && (
         <div className="tabbar">
-          <button className={tab === 'dashboard' ? 'active' : ''} onClick={() => goTab('dashboard')}>
-            <span className="tico"><Icon name="dashboard" /></span>หน้าหลัก
-          </button>
-          <button className={tab === 'members' ? 'active' : ''} onClick={() => goTab('members')}>
-            <span className="tico"><Icon name="users" /></span>สมาชิก
-          </button>
-          <button className={tab === 'queue' ? 'active' : ''} onClick={() => goTab('queue')}>
-            <span className="tico"><Icon name="clock" /></span>คิว
-          </button>
-          {/* staff pick services inside a ticket → hide the บริการ tab (lean) */}
-          {isOwner && (
-            <button className={tab === 'services' ? 'active' : ''} onClick={() => goTab('services')}>
-              <span className="tico"><Icon name="sparkles" /></span>บริการ
+          {NAV_CORE.map((n) => (
+            <button key={n.tab} className={tab === n.tab ? 'active' : ''} onClick={() => goTab(n.tab)}>
+              <span className="tico"><Icon name={n.icon} /></span>{n.label}
             </button>
-          )}
-          <button className={tab === 'tickets' ? 'active' : ''} onClick={() => goTab('tickets')}>
-            <span className="tico"><Icon name="receipt" /></span>บิล
-          </button>
+          ))}
+          {/* owner on phone: overflow owner tabs live behind "เพิ่มเติม". staff have none → hidden. */}
           {isOwner && (
-            <button className={tab === 'users' ? 'active' : ''} onClick={() => goTab('users')}>
-              <span className="tico"><Icon name="key" /></span>ผู้ใช้
-            </button>
-          )}
-          {isOwner && (
-            <button className={tab === 'reports' ? 'active' : ''} onClick={() => goTab('reports')}>
-              <span className="tico"><Icon name="banknote" /></span>รายงาน
-            </button>
-          )}
-          {isOwner && (
-            <button className={tab === 'audit' ? 'active' : ''} onClick={() => goTab('audit')}>
-              <span className="tico"><Icon name="history" /></span>บันทึก
-            </button>
-          )}
-          {isOwner && (
-            <button className={tab === 'settings' ? 'active' : ''} onClick={() => goTab('settings')}>
-              <span className="tico"><Icon name="lock" /></span>ตั้งค่า
+            <button
+              className={'more-btn' + (NAV_MANAGE.some((n) => n.tab === tab) ? ' active' : '')}
+              onClick={() => setMoreOpen(true)}
+              aria-haspopup="dialog"
+              aria-expanded={moreOpen}
+            >
+              <span className="tico"><Icon name="more-horizontal" /></span>เพิ่มเติม
             </button>
           )}
         </div>
       )}
+      </div>
+
+      {!view && !wide && isOwner && moreOpen && (
+        <MoreSheet items={NAV_MANAGE} tab={tab} goTab={goTab} onClose={() => setMoreOpen(false)} />
+      )}
 
       {toast && <div className="toast" role="status" aria-live="polite">{toast}</div>}
     </div>
+  )
+}
+
+/* ───────────────────────── Sidebar (owner ≥768 "wide") ─────────────────────────
+   Left rail listing all owner destinations, grouped (core + "เจ้าของร้าน" section),
+   with logout pinned at the bottom. Replaces the bottom tabbar for owner-wide. */
+function Sidebar({ core, manage, tab, goTab, onLogout }) {
+  const NavBtn = (n) => (
+    <button
+      key={n.tab}
+      className={'nav-item' + (tab === n.tab ? ' active' : '')}
+      onClick={() => goTab(n.tab)}
+      aria-current={tab === n.tab ? 'page' : undefined}
+    >
+      <span className="nav-ico"><Icon name={n.icon} size={19} /></span>{n.label}
+    </button>
+  )
+  return (
+    <aside className="sidebar" aria-label="เมนูหลัก">
+      <div className="sidebar-head">
+        <Logo className="logo" />
+        <div className="sidebar-title">
+          <div className="t">Lazy Nail POS</div>
+          <div className="s">ร้านทำเล็บ</div>
+        </div>
+      </div>
+      <nav className="sidebar-nav">
+        {core.map(NavBtn)}
+        <div className="nav-section">เจ้าของร้าน</div>
+        {manage.map(NavBtn)}
+      </nav>
+      <div className="sidebar-spacer" />
+      <button className="nav-item logout" onClick={onLogout}>
+        <span className="nav-ico"><Icon name="log-out" size={19} /></span>ออกจากระบบ
+      </button>
+    </aside>
+  )
+}
+
+/* ───────────────────────── MoreSheet (owner phone overflow) ─────────────────────────
+   Slide-up bottom sheet listing owner-only overflow destinations. Modal dialog:
+   backdrop + Escape close, focus moved into the sheet on open and restored on close. */
+function MoreSheet({ items, tab, goTab, onClose }) {
+  const sheetRef = useRef(null)
+  const firstRef = useRef(null)
+  const prevFocus = useRef(null)
+
+  useEffect(() => {
+    prevFocus.current = typeof document !== 'undefined' ? document.activeElement : null
+    // move focus into the sheet (first item) on open
+    if (firstRef.current) firstRef.current.focus()
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); onClose() } }
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      // restore focus on close if the previous element is still around
+      const el = prevFocus.current
+      if (el && typeof el.focus === 'function') el.focus()
+    }
+  }, [])
+
+  return (
+    <>
+      <div className="sheet-bg" onClick={onClose} />
+      <div
+        className="sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label="เมนูเพิ่มเติม"
+        ref={sheetRef}
+      >
+        <div className="sheet-grip" aria-hidden="true" />
+        {items.map((n, i) => (
+          <button
+            key={n.tab}
+            ref={i === 0 ? firstRef : undefined}
+            className={'sheet-item' + (tab === n.tab ? ' active' : '')}
+            onClick={() => goTab(n.tab)}
+            aria-current={tab === n.tab ? 'page' : undefined}
+          >
+            <span className="sheet-ico"><Icon name={n.icon} size={22} /></span>{n.label}
+          </button>
+        ))}
+      </div>
+    </>
   )
 }
 
