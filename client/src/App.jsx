@@ -2910,6 +2910,110 @@ function UserForm({ flash, u, onDone, onCancel }) {
 // method code -> Thai label
 const REPORT_METHOD_TH = { cash: 'เงินสด', beam_edc: 'บัตร/EDC' }
 
+/* ── reports charts: inline SVG, no deps ──
+   Colours come from the CI design tokens (var(--accent) orange + semantic
+   ok/warn/bad/muted). No required animation → reduced-motion safe. */
+const CHART_COLORS = ['var(--accent)', 'var(--ok)', 'var(--warn)', 'var(--bad)', 'var(--rose-dark)', 'var(--muted)']
+
+// short day label e.g. '06-25' from 'YYYY-MM-DD'
+const chartDayShort = (s) => (typeof s === 'string' && s.length >= 10 ? s.slice(5) : s)
+
+// Daily revenue → line chart (sparkline-style with area + dots).
+function DailyLineChart({ daily }) {
+  const W = 600, H = 180, padL = 8, padR = 8, padT = 12, padB = 22
+  const pts = daily.map((d) => N(d.amount))
+  const max = pts.reduce((m, v) => Math.max(m, v), 0)
+  const n = pts.length
+  const innerW = W - padL - padR
+  const innerH = H - padT - padB
+  // x positions; with a single point centre it.
+  const xAt = (i) => (n <= 1 ? W / 2 : padL + (innerW * i) / (n - 1))
+  const yAt = (v) => padT + innerH - (max > 0 ? (v / max) * innerH : 0)
+  const linePath = pts.map((v, i) => `${i === 0 ? 'M' : 'L'}${xAt(i).toFixed(1)},${yAt(v).toFixed(1)}`).join(' ')
+  const areaPath = `${linePath} L${xAt(n - 1).toFixed(1)},${(padT + innerH).toFixed(1)} L${xAt(0).toFixed(1)},${(padT + innerH).toFixed(1)} Z`
+  const label = `กราฟแนวโน้มรายวัน ${n} วัน, ยอดสูงสุด ${baht(max)}`
+  return (
+    <div className="chart chart-line" role="img" aria-label={label}>
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" width="100%" height={H} focusable="false" aria-hidden="true">
+        <path className="chart-area" d={areaPath} />
+        <path className="chart-stroke" d={linePath} fill="none" />
+        {pts.map((v, i) => (
+          <circle key={i} className="chart-dot" cx={xAt(i)} cy={yAt(v)} r={n > 30 ? 1.5 : 3}>
+            <title>{`${chartDayShort(daily[i].day)} · ${baht(v)}`}</title>
+          </circle>
+        ))}
+      </svg>
+      <div className="chart-xaxis" aria-hidden="true">
+        <span className="tnum">{chartDayShort(daily[0]?.day)}</span>
+        {n > 1 && <span className="tnum">{chartDayShort(daily[n - 1]?.day)}</span>}
+      </div>
+    </div>
+  )
+}
+
+// Payment methods → donut chart with colour swatches + labels.
+function PaymentDonutChart({ byMethod }) {
+  const segs = byMethod.map((m) => ({ key: m.method, label: REPORT_METHOD_TH[m.method] || m.method, value: N(m.amount) }))
+  const total = segs.reduce((s, x) => s + x.value, 0)
+  const R = 60, stroke = 26, C = 2 * Math.PI * R, cx = 80, cy = 80
+  let offset = 0
+  const label = 'สัดส่วนยอดขายตามวิธีจ่าย: ' + segs.map((s) => `${s.label} ${baht(s.value)}`).join(', ')
+  return (
+    <div className="chart chart-donut" role="img" aria-label={label}>
+      <svg viewBox="0 0 160 160" width="160" height="160" focusable="false" aria-hidden="true">
+        <circle cx={cx} cy={cy} r={R} fill="none" stroke="var(--surface-2)" strokeWidth={stroke} />
+        {total > 0 && segs.map((s, i) => {
+          const frac = s.value / total
+          const dash = `${(frac * C).toFixed(2)} ${C.toFixed(2)}`
+          const dashOffset = (-offset * C).toFixed(2)
+          offset += frac
+          return (
+            <circle key={s.key} cx={cx} cy={cy} r={R} fill="none"
+              stroke={CHART_COLORS[i % CHART_COLORS.length]} strokeWidth={stroke}
+              strokeDasharray={dash} strokeDashoffset={dashOffset}
+              transform={`rotate(-90 ${cx} ${cy})`}>
+              <title>{`${s.label} · ${baht(s.value)} · ${Math.round(frac * 100)}%`}</title>
+            </circle>
+          )
+        })}
+        <text x={cx} y={cy - 4} textAnchor="middle" className="chart-donut-total">{baht(total)}</text>
+        <text x={cx} y={cy + 14} textAnchor="middle" className="chart-donut-cap">รวม</text>
+      </svg>
+      <ul className="chart-legend">
+        {segs.map((s, i) => (
+          <li key={s.key}>
+            <span className="chart-swatch" style={{ background: CHART_COLORS[i % CHART_COLORS.length] }} aria-hidden="true" />
+            <span className="chart-legend-label">{s.label}</span>
+            <span className="chart-legend-val tnum">{baht(s.value)}</span>
+            <span className="chart-legend-pct tnum">{total > 0 ? Math.round((s.value / total) * 100) : 0}%</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+// Top services → horizontal bar chart (value-labelled).
+function TopServicesBarChart({ byService, limit = 8 }) {
+  const rows = byService.slice(0, limit).map((s) => ({ key: s.service_id ?? s.name, name: s.name, value: N(s.amount), qty: N(s.qty) }))
+  const max = rows.reduce((m, r) => Math.max(m, r.value), 0)
+  const label = 'บริการขายดี: ' + rows.map((r) => `${r.name} ${baht(r.value)}`).join(', ')
+  return (
+    <div className="chart chart-bars" role="img" aria-label={label}>
+      {rows.map((r, i) => (
+        <div className="chart-bar-row" key={r.key}>
+          <span className="chart-bar-name">{r.name}</span>
+          <span className="chart-bar-track">
+            <span className="chart-bar-fill"
+              style={{ width: (max > 0 ? (r.value / max) * 100 : 0) + '%', background: CHART_COLORS[i % CHART_COLORS.length] }} />
+          </span>
+          <span className="chart-bar-val price tnum">{baht(r.value)}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // local date -> 'YYYY-MM-DD' (browser-local, padded)
 function ymd(d) {
   const y = d.getFullYear()
@@ -3040,6 +3144,7 @@ function Report({ flash }) {
       {/* 2. แยกตามวิธีจ่าย */}
       <div className="card" style={{ marginBottom: 12 }}>
         <h3 style={{ margin: '0 0 10px' }}>แยกตามวิธีจ่าย</h3>
+        {byMethod.length > 0 && <PaymentDonutChart byMethod={byMethod} />}
         <table className="data-table">
           <thead>
             <tr>
@@ -3098,6 +3203,8 @@ function Report({ flash }) {
         {byService.length === 0 ? (
           <div className="meta" style={{ color: 'var(--muted)' }}>ไม่มีข้อมูลในช่วงนี้</div>
         ) : (
+          <>
+          <TopServicesBarChart byService={byService} />
           <table className="data-table">
             <thead>
               <tr>
@@ -3119,6 +3226,7 @@ function Report({ flash }) {
               ))}
             </tbody>
           </table>
+          </>
         )}
       </div>
 
@@ -3135,17 +3243,20 @@ function Report({ flash }) {
         {daily.length === 0 ? (
           <div className="meta" style={{ color: 'var(--muted)' }}>ไม่มีข้อมูลในช่วงนี้</div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {daily.map((d) => (
-              <div key={d.day} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <div className="meta tnum" style={{ width: 92, flex: 'none', color: 'var(--muted)' }}>{d.day}</div>
-                <div style={{ flex: 1, background: 'var(--rose-soft)', borderRadius: 6, height: 18, overflow: 'hidden' }}>
-                  <div style={{ width: (maxDaily > 0 ? (N(d.amount) / maxDaily * 100) : 0) + '%', background: 'var(--accent)', height: '100%', borderRadius: 6 }} />
+          <>
+            <DailyLineChart daily={daily} />
+            <div className="chart-daily-list" style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+              {daily.map((d) => (
+                <div key={d.day} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div className="meta tnum" style={{ width: 92, flex: 'none', color: 'var(--muted)' }}>{d.day}</div>
+                  <div style={{ flex: 1, background: 'var(--rose-soft)', borderRadius: 6, height: 18, overflow: 'hidden' }}>
+                    <div style={{ width: (maxDaily > 0 ? (N(d.amount) / maxDaily * 100) : 0) + '%', background: 'var(--accent)', height: '100%', borderRadius: 6 }} />
+                  </div>
+                  <div className="price tnum" style={{ width: 96, flex: 'none', textAlign: 'right' }}>{baht(d.amount)}</div>
                 </div>
-                <div className="price tnum" style={{ width: 96, flex: 'none', textAlign: 'right' }}>{baht(d.amount)}</div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          </>
         )}
       </div>
 
