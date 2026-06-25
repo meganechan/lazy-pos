@@ -596,7 +596,7 @@ function NewMember({ flash, onDone }) {
   }
 
   return (
-    <div className="card">
+    <div className="card form-card">
       <label htmlFor="member-name">ชื่อ *</label>
       <input id="member-name" name="name" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อลูกค้า" />
       <label htmlFor="member-phone">เบอร์โทร</label>
@@ -695,7 +695,7 @@ function EditMember({ m, flash, onSaved, onCancel }) {
   }
 
   return (
-    <div className="card">
+    <div className="card form-card">
       <label htmlFor="edit-member-name">ชื่อ *</label>
       <input id="edit-member-name" name="name" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อลูกค้า" />
       <label htmlFor="edit-member-phone">เบอร์โทร</label>
@@ -956,7 +956,7 @@ function ServiceForm({ flash, s, categories, onDone, onCancel }) {
   }
 
   return (
-    <div className="card">
+    <div className="card form-card">
       <label htmlFor="svc-name">ชื่อบริการ *</label>
       <input id="svc-name" name="service-name" autoComplete="off" value={name} onChange={(e) => setName(e.target.value)} placeholder="เช่น ทาเจลสีพื้น" />
 
@@ -988,9 +988,9 @@ function ServiceForm({ flash, s, categories, onDone, onCancel }) {
       <textarea id="svc-description" name="service-description" autoComplete="off" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="รายละเอียดงาน / เงื่อนไข / หมายเหตุ" rows={4} style={{ width: '100%', padding: '13px 14px', borderRadius: 12, border: '1px solid var(--line)', fontSize: 16, fontFamily: 'inherit', background: '#fff', color: 'var(--ink)', resize: 'vertical' }} />
 
       <label>สถานะ</label>
-      <div className="btn-row" style={{ marginTop: 0 }}>
-        <button className={'btn ' + (active ? '' : 'ghost')} onClick={() => setActive(true)}>ใช้งานอยู่</button>
-        <button className={'btn ' + (!active ? 'dark' : 'ghost')} onClick={() => setActive(false)}>ปิดใช้งาน</button>
+      <div className="segmented" role="group" aria-label="สถานะ">
+        <button type="button" className="seg" aria-pressed={active} onClick={() => setActive(true)}>ใช้งานอยู่</button>
+        <button type="button" className="seg" aria-pressed={!active} onClick={() => setActive(false)}>ปิดใช้งาน</button>
       </div>
 
       <div className="btn-row">
@@ -1075,7 +1075,7 @@ function ServiceDetail({ id, flash, onBack, onEdit }) {
           const ed = oEdits[o.id]
           const inactive = o.active === false
           return (
-            <div className="card" key={o.id}>
+            <div className="card form-card" key={o.id}>
               {ed ? (
                 <>
                   <label htmlFor={`addon-${o.id}-name`}>ชื่อ</label>
@@ -1108,7 +1108,7 @@ function ServiceDetail({ id, flash, onBack, onEdit }) {
       )}
 
       <div className="section-title">เพิ่ม add-on</div>
-      <div className="card">
+      <div className="card form-card">
         <label htmlFor="new-addon-name">ชื่อ add-on</label>
         <input id="new-addon-name" name="new-addon-name" autoComplete="off" value={oName} onChange={(e) => setOName(e.target.value)} placeholder="เช่น เพิ่มลาย, ถอดเก่า" />
         <label htmlFor="new-addon-price">+ราคา (บาท)</label>
@@ -2423,7 +2423,7 @@ function Settings({ flash }) {
 
   return (
     <>
-      <div className="card">
+      <div className="card form-card">
         <h3 style={{ margin: '0 0 8px' }}>ค่าเริ่มต้นทั้งร้าน</h3>
         <div className="meta" style={{ marginBottom: 10 }}>เพดาน/โควต้าที่พนักงานทำได้เองโดยไม่ต้องขออนุมัติเจ้าของ (เจ้าของไม่จำกัด)</div>
 
@@ -2450,7 +2450,7 @@ function Settings({ flash }) {
         </div>
       </div>
 
-      <div className="card">
+      <div className="card form-card">
         <h3 style={{ margin: '0 0 8px' }}>ตั้งค่าต่อพนักงาน</h3>
         <div className="meta" style={{ marginBottom: 10 }}>กำหนดเพดาน/โควต้าเฉพาะรายคน · ว่าง = ใช้ค่าร้าน</div>
 
@@ -2975,7 +2975,7 @@ function UserForm({ flash, u, onDone, onCancel }) {
   }
 
   return (
-    <div className="card">
+    <div className="card form-card">
       <label htmlFor="user-name">ชื่อ *</label>
       <input id="user-name" name="user-name" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อผู้ใช้" />
 
@@ -3000,9 +3000,9 @@ function UserForm({ flash, u, onDone, onCancel }) {
       {editing && (
         <>
           <label>สถานะ</label>
-          <div className="btn-row" style={{ marginTop: 0 }}>
-            <button className={'btn ' + (active ? '' : 'ghost')} onClick={() => setActive(true)}>ใช้งานอยู่</button>
-            <button className={'btn ' + (!active ? 'dark' : 'ghost')} onClick={() => setActive(false)}>ปิดใช้งาน</button>
+          <div className="segmented" role="group" aria-label="สถานะ">
+            <button type="button" className="seg" aria-pressed={active} onClick={() => setActive(true)}>ใช้งานอยู่</button>
+            <button type="button" className="seg" aria-pressed={!active} onClick={() => setActive(false)}>ปิดใช้งาน</button>
           </div>
         </>
       )}
