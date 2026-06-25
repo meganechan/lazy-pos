@@ -100,6 +100,54 @@ const statusTH = {
   closed: 'ปิดบิล',
 }
 
+/* ───────────────────────── URL / deep-link state ─────────────────────────
+   Reflect (tab, view) in the query string and restore it via the History API,
+   so the browser Back button steps through tab/detail changes and links are
+   shareable. Param scheme:
+     ?tab=<tab>                          → just a tab
+     ?tab=<tab>&view=member&id=<n>       → member detail (restored on reload)
+     ?tab=<tab>&view=ticket&id=<n>       → ticket detail (restored on reload)
+     ?tab=<tab>&view=<formKind>          → transient form (back closes it, NOT
+                                            restored-with-data on reload)
+   Only id-based detail views (member/ticket) are reconstructed on initial load;
+   form kinds (newMember/newTicket/newUser/editUser) drop to view=null. */
+const VALID_TABS = new Set([
+  'dashboard', 'queue', 'tickets', 'members',
+  'services', 'reports', 'users', 'audit', 'settings',
+])
+
+// build the query string for a (tab, view) pair
+function urlFor(tab, view) {
+  const p = new URLSearchParams()
+  p.set('tab', tab || 'dashboard')
+  if (view && view.kind) {
+    if (view.kind === 'member' || view.kind === 'ticket') {
+      p.set('view', view.kind)
+      if (view.id != null) p.set('id', String(view.id))
+    } else {
+      // transient form views: record the kind so Back closes them
+      p.set('view', view.kind)
+    }
+  }
+  return '?' + p.toString()
+}
+
+// parse the current URL → { tab, view } using only restorable info.
+// id-based views (member/ticket) are reconstructed; everything else → view=null.
+function parseUrl() {
+  const p = new URLSearchParams(window.location.search)
+  const t = p.get('tab')
+  const tab = t && VALID_TABS.has(t) ? t : 'dashboard'
+  const vk = p.get('view')
+  let view = null
+  if (vk === 'member' || vk === 'ticket') {
+    const id = Number(p.get('id'))
+    if (Number.isFinite(id) && id > 0) view = { kind: vk, id }
+  }
+  // form kinds + unknown view params → view stays null (just show the tab)
+  return { tab, view }
+}
+
 export default function App() {
   // auth gate: only treat as logged-in when both token + user exist
   const [user, setUser] = useState(() => (getToken() ? getUser() : null))
@@ -109,6 +157,47 @@ export default function App() {
   const [moreOpen, setMoreOpen] = useState(false) // owner-phone overflow bottom sheet
   const { isLarge } = useViewport()
 
+  // url-state plumbing — must live ABOVE the `if (!user)` early return (rules of hooks).
+  // isPopping: true while applying a popstate, so the [tab,view] sync effect doesn't
+  //   push a NEW history entry for a state change that came FROM history (loop guard).
+  // urlReady: gates the sync effect until the mount effect has parsed the initial URL,
+  //   so the first render doesn't push a redundant entry.
+  const isPopping = useRef(false)
+  const urlReady = useRef(false)
+
+  // mount: parse initial URL (only when authenticated), normalize it with replaceState,
+  // and install the popstate listener so Back navigates within the app.
+  useEffect(() => {
+    if (!user) return // never read url-state during the unauthenticated Login render
+    const init = parseUrl()
+    setTab(init.tab)
+    setView(init.view)
+    window.history.replaceState({ tab: init.tab, view: init.view }, '', urlFor(init.tab, init.view))
+    urlReady.current = true
+
+    const onPop = () => {
+      const next = parseUrl()
+      isPopping.current = true
+      setTab(next.tab)
+      setView(next.view)
+    }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user])
+
+  // sync (tab, view) → URL on forward navigation. Skipped while popping (history-driven)
+  // and until the initial parse is done. pushState so device/browser Back steps back.
+  useEffect(() => {
+    if (!user || !urlReady.current) return
+    if (isPopping.current) { isPopping.current = false; return }
+    const target = urlFor(tab, view)
+    if (target !== window.location.search) {
+      window.history.pushState({ tab, view }, '', target)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, view, user])
+
   const flash = (msg) => {
     setToast(msg)
     setTimeout(() => setToast(null), 2200)
@@ -116,6 +205,10 @@ export default function App() {
 
   const onLoggedIn = (token, u) => {
     setAuth(token, u)
+    // reset url-state to the default before the mount effect re-parses on `user` flip,
+    // so a pre-login deep-link in the address bar can't leak into the session.
+    urlReady.current = false
+    window.history.replaceState({ tab: 'dashboard', view: null }, '', '?tab=dashboard')
     setUser(u)
     setTab('dashboard')
     setView(null)
@@ -124,6 +217,9 @@ export default function App() {
   const doLogout = () => {
     api.logout().catch(() => {}) // best-effort; clear locally regardless
     clearAuth()
+    // clear url-state to base so the Login screen carries no leftover params
+    urlReady.current = false
+    window.history.replaceState(null, '', window.location.pathname)
     setUser(null)
     setTab('dashboard')
     setView(null)
@@ -230,6 +326,20 @@ export default function App() {
       </div>
 
       <div className="content">
+        {/* wide-detail header: the topbar (with its Back + title) is hidden in the
+            owner-wide layout, so detail/form views would otherwise have no way back
+            and no page title. Render an in-content header bar only when wide && view. */}
+        {wide && view && (
+          <div className="wide-detail-head">
+            <button className="wide-back" onClick={onBack} aria-label="กลับ">
+              <Icon name="chevron-left" size={20} />
+            </button>
+            <div className="wide-detail-title">
+              <h2>{title}</h2>
+              {sub && <div className="sub">{sub}</div>}
+            </div>
+          </div>
+        )}
         {view ? (
           view.kind === 'member' ? (
             <MemberDetail id={view.id} onNewTicket={(mid) => setView({ kind: 'newTicket', preMember: mid })} flash={flash} openTicket={openTicket} ownerPhone={ownerPhone} />
