@@ -388,7 +388,7 @@ function MoreSheet({ items, tab, goTab, onClose }) {
 }
 
 function Loading() {
-  return <div className="empty"><div className="big"><Icon name="loader" size={32} className="spin" /></div>กำลังโหลด...</div>
+  return <div className="empty"><div className="big"><Icon name="loader" size={32} className="spin" /></div>กำลังโหลด…</div>
 }
 
 function StatusBadge({ status }) {
@@ -558,7 +558,7 @@ function Members({ openMember, onNewMember, ownerPhone }) {
         <button className="btn" onClick={onNewMember}><Icon name="plus" size={20} /> เพิ่มสมาชิกใหม่</button>
       )}
       <div className="spacer" />
-      <input type="search" aria-label="ค้นหาสมาชิก" value={q} onChange={(e) => setQ(e.target.value)} placeholder="ค้นหาชื่อ/เบอร์..." />
+      <input type="search" aria-label="ค้นหาสมาชิก" value={q} onChange={(e) => setQ(e.target.value)} placeholder="ค้นหาชื่อ/เบอร์…" />
       <div className="spacer" />
       {!list ? (
         <Loading />
@@ -600,13 +600,13 @@ function NewMember({ flash, onDone }) {
       <label htmlFor="member-name">ชื่อ *</label>
       <input id="member-name" name="name" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อลูกค้า" />
       <label htmlFor="member-phone">เบอร์โทร</label>
-      <input id="member-phone" name="phone" type="tel" inputMode="tel" autoComplete="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="08x-xxx-xxxx" />
+      <input id="member-phone" name="phone" type="tel" inputMode="tel" autoComplete="tel" spellCheck={false} value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="08x-xxx-xxxx" />
       <label htmlFor="member-line">LINE User ID</label>
-      <input id="member-line" name="line_user_id" autoComplete="off" value={line} onChange={(e) => setLine(e.target.value)} placeholder="U1234..." />
+      <input id="member-line" name="line_user_id" autoComplete="off" spellCheck={false} value={line} onChange={(e) => setLine(e.target.value)} placeholder="U1234…" />
       <label htmlFor="member-notes">โน้ต</label>
-      <input id="member-notes" name="notes" autoComplete="off" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="แพ้น้ำยา, ชอบสีแดง ..." />
+      <input id="member-notes" name="notes" autoComplete="off" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="แพ้น้ำยา, ชอบสีแดง …" />
       <div className="btn-row">
-        <button className="btn" disabled={saving} onClick={save}>{saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
+        <button className="btn" disabled={saving} onClick={save}>{saving ? 'กำลังบันทึก…' : 'บันทึก'}</button>
       </div>
     </div>
   )
@@ -699,14 +699,14 @@ function EditMember({ m, flash, onSaved, onCancel }) {
       <label htmlFor="edit-member-name">ชื่อ *</label>
       <input id="edit-member-name" name="name" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="ชื่อลูกค้า" />
       <label htmlFor="edit-member-phone">เบอร์โทร</label>
-      <input id="edit-member-phone" name="phone" type="tel" inputMode="tel" autoComplete="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="08x-xxx-xxxx" />
+      <input id="edit-member-phone" name="phone" type="tel" inputMode="tel" autoComplete="tel" spellCheck={false} value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="08x-xxx-xxxx" />
       <label htmlFor="edit-member-line">LINE User ID</label>
-      <input id="edit-member-line" name="line_user_id" autoComplete="off" value={line} onChange={(e) => setLine(e.target.value)} placeholder="U1234..." />
+      <input id="edit-member-line" name="line_user_id" autoComplete="off" spellCheck={false} value={line} onChange={(e) => setLine(e.target.value)} placeholder="U1234…" />
       <label htmlFor="edit-member-notes">โน้ต</label>
-      <input id="edit-member-notes" name="notes" autoComplete="off" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="แพ้น้ำยา, ชอบสีแดง ..." />
+      <input id="edit-member-notes" name="notes" autoComplete="off" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="แพ้น้ำยา, ชอบสีแดง …" />
       <div className="btn-row">
         <button className="btn ghost" disabled={saving} onClick={onCancel}>ยกเลิก</button>
-        <button className="btn" disabled={saving} onClick={save}>{saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
+        <button className="btn" disabled={saving} onClick={save}>{saving ? 'กำลังบันทึก…' : 'บันทึก'}</button>
       </div>
     </div>
   )
@@ -995,7 +995,7 @@ function ServiceForm({ flash, s, categories, onDone, onCancel }) {
 
       <div className="btn-row">
         <button className="btn ghost" disabled={saving} onClick={onCancel}>ยกเลิก</button>
-        <button className="btn" disabled={saving} onClick={save}>{saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
+        <button className="btn" disabled={saving} onClick={save}>{saving ? 'กำลังบันทึก…' : 'บันทึก'}</button>
       </div>
     </div>
   )
@@ -1298,7 +1298,7 @@ function NewTicket({ flash, preMember, onCreated }) {
         </div>
       )}
       <div className="btn-row">
-        <button className="btn" disabled={creating} onClick={create}>{creating ? 'กำลังเปิด...' : 'เปิดบิล'}</button>
+        <button className="btn" disabled={creating} onClick={create}>{creating ? 'กำลังเปิด…' : 'เปิดบิล'}</button>
       </div>
     </div>
   )
@@ -1313,7 +1313,7 @@ function OverridePinModal({ title, reason, err, busy, onSubmit, onCancel }) {
   const reasonTH = reason === 'limit' ? 'เกินเพดานที่ตั้งไว้' : reason === 'quota' ? 'เกินโควต้าวันนี้' : ''
   return (
     <div
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, padding: 16 }}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, padding: 16, overscrollBehavior: 'contain', touchAction: 'manipulation' }}
       onClick={onCancel}
     >
       <div className="card" style={{ width: '100%', maxWidth: 360, margin: 0 }} onClick={(e) => e.stopPropagation()}>
@@ -2446,7 +2446,7 @@ function Settings({ flash }) {
         )}
 
         <div className="btn-row">
-          <button className="btn" disabled={saving} onClick={save}>{saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
+          <button className="btn" disabled={saving} onClick={save}>{saving ? 'กำลังบันทึก…' : 'บันทึก'}</button>
         </div>
       </div>
 
@@ -2485,7 +2485,7 @@ function Settings({ flash }) {
                 </div>
                 <div className="btn-row">
                   <button className="btn" disabled={!!staffSaving[st.user_id]} onClick={() => saveStaff(st)}>
-                    {staffSaving[st.user_id] ? 'กำลังบันทึก...' : 'บันทึก'}
+                    {staffSaving[st.user_id] ? 'กำลังบันทึก…' : 'บันทึก'}
                   </button>
                 </div>
               </div>
@@ -2682,6 +2682,7 @@ function Login({ onLoggedIn }) {
             id="shop-code"
             name="shop-code"
             autoComplete="off"
+            spellCheck={false}
             aria-labelledby="shop-code-label"
             value={code}
             onChange={(e) => { setShopErr(''); setCode(e.target.value) }}
@@ -2860,7 +2861,7 @@ function BoltPairing({ flash, canManage }) {
               disabled={busy || code.trim().length !== 8}
               onClick={pair}
             >
-              {busy ? 'กำลัง pair...' : (paired ? 'Pair ใหม่' : 'Pair เครื่อง')}
+              {busy ? 'กำลัง pair…' : (paired ? 'Pair ใหม่' : 'Pair เครื่อง')}
             </button>
           </div>
           {err && <div className="note-warn" style={{ marginTop: 8 }}>⚠️ {err}</div>}
@@ -3008,7 +3009,7 @@ function UserForm({ flash, u, onDone, onCancel }) {
 
       <div className="btn-row">
         <button className="btn ghost" disabled={saving} onClick={onCancel}>ยกเลิก</button>
-        <button className="btn" disabled={saving} onClick={save}>{saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
+        <button className="btn" disabled={saving} onClick={save}>{saving ? 'กำลังบันทึก…' : 'บันทึก'}</button>
       </div>
     </div>
   )

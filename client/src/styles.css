@@ -64,6 +64,8 @@ body {
 
 /* display font for headings + key labels */
 h1, h2, .name, .section-title { font-family: var(--font-display); }
+/* balance heading line breaks for tidier multi-line titles */
+h1, h2 { text-wrap: balance; }
 
 /* tabular numerals so figures don't jitter */
 .tnum, .price, .stat .v, .total-bar .v, .receipt .grand,
@@ -363,7 +365,9 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   font-size: 14px; margin: 8px 0; }
 
 /* pin pad */
-.pinpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-3); margin-top: 18px; }
+.pinpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-3); margin-top: 18px;
+  /* contain scroll/overscroll + disable double-tap zoom delay on taps */
+  overscroll-behavior: contain; touch-action: manipulation; }
 .pinkey { height: 68px; border-radius: var(--radius-lg); border: 1px solid var(--border);
   background: var(--surface); color: var(--ink); font-size: 26px; font-weight: 700;
   display: flex; align-items: center; justify-content: center;
