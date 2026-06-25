@@ -148,6 +148,7 @@ h1, h2, .name, .section-title { font-family: var(--font-display); }
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md);
   box-shadow: var(--shadow-sm); transition: box-shadow .2s ease; }
 .li:hover { box-shadow: var(--shadow-md); }
+button.li, button.pay { width: 100%; text-align: left; font: inherit; color: inherit; background: var(--surface); -webkit-appearance: none; appearance: none; cursor: pointer; }
 .li + .li { margin-top: var(--space-2); }
 .li .avatar { width: 42px; height: 42px; border-radius: 50%; flex: none;
   background: var(--rose-soft); color: var(--rose-dark); font-weight: 700;
