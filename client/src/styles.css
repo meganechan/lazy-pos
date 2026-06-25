@@ -200,6 +200,37 @@ button.li, button.pay { width: 100%; text-align: left; font: inherit; color: inh
 .btn:disabled:hover { filter: none; box-shadow: none; }
 .btn-row { display: flex; gap: var(--space-3); margin-top: var(--space-3); }
 
+/* compact segmented toggle — a status switch, visually lighter than .btn actions.
+   Intrinsic width (NOT full-width) so it reads as a toggle, not a save/cancel action. */
+.segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  margin-top: var(--space-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.segmented .seg {
+  appearance: none;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 7px 16px;
+  border-radius: 7px;
+  color: var(--muted);
+  transition: background .15s ease, color .15s ease;
+}
+.segmented .seg:hover { color: var(--ink); }
+.segmented .seg[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--on-primary);
+  box-shadow: var(--shadow-sm);
+}
+
 /* forms */
 label { font-size: 13px; color: var(--muted); font-weight: 600; display: block; margin: var(--space-3) 2px var(--space-2); }
 input, select { width: 100%; padding: 13px 14px; border-radius: var(--radius-sm);
@@ -478,6 +509,12 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 
   /* data tables fill the available width */
   .app.wide .data-table { width: 100%; }
+
+  /* create/edit FORM cards keep a readable column (designed for ~480px) instead
+     of stretching edge-to-edge now that .app.wide removed the 480px outer cap.
+     Left-aligned to match the sidebar. Only genuine input forms carry .form-card —
+     dashboards, reports, and management tables intentionally use full width. */
+  .app.wide .form-card { max-width: 600px; }
 
   /* ── left sidebar / rail (owner-wide nav) ── */
   .sidebar {
