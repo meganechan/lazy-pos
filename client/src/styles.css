@@ -617,3 +617,59 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 .chart-bar-track { flex: 1; height: 16px; background: var(--surface-2); border-radius: var(--radius-sm); overflow: hidden; }
 .chart-bar-fill { display: block; height: 100%; border-radius: var(--radius-sm); min-width: 2px; }
 .chart-bar-val { width: 84px; flex: none; text-align: right; }
+
+/* ───────────────────────── service images (#29) ─────────────────────────
+   Uploader + thumbnail grid in ServiceForm edit mode. Square thumbs with a
+   fixed aspect-ratio so the grid never shifts layout as images load (no CLS). */
+.svc-images { margin-top: var(--space-2); }
+.svc-images-bar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); margin-bottom: var(--space-3); }
+/* label styled as a button (.btn.secondary); reuse hierarchy but mark as a file picker */
+.svc-images-add { width: auto; cursor: pointer; }
+.svc-images-add.is-disabled { opacity: .55; cursor: default; pointer-events: none; }
+.svc-images-add .spin { animation: svc-spin 1s linear infinite; }
+@keyframes svc-spin { to { transform: rotate(360deg); } }
+
+.svc-images-empty,
+.svc-images-hint { color: var(--muted); font-size: 14px; padding: var(--space-2) 0; }
+
+.svc-image-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: var(--space-3);
+}
+.svc-thumb {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-sm);
+}
+.svc-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.svc-thumb-del {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(24, 24, 27, .62);
+  color: #fff;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background .15s ease;
+}
+.svc-thumb-del:hover { background: var(--danger); }
+.svc-thumb-del:disabled { opacity: .5; cursor: default; }
