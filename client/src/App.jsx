@@ -1080,6 +1080,48 @@ function ServiceForm({ flash, s, categories, onDone, onCancel }) {
   const [active, setActive] = useState(s ? s.active !== false : true)
   const [saving, setSaving] = useState(false)
 
+  // ── service images (#29, edit mode only) ──
+  const [images, setImages] = useState([])
+  const [uploading, setUploading] = useState(false)
+  const fileInputRef = useRef(null)
+
+  // load existing images when editing an existing service
+  useEffect(() => {
+    if (!editing || !s || s.id == null) return
+    api.getServiceImages(s.id)
+      .then((r) => setImages((r && r.images) || []))
+      .catch(() => { /* non-fatal: just show empty */ })
+  }, [editing, s && s.id])
+
+  const onPickImages = (e) => {
+    const picked = Array.from(e.target.files || [])
+    // allow re-selecting the same file later
+    if (fileInputRef.current) fileInputRef.current.value = ''
+    if (picked.length === 0) return
+    // client-side guard: jpeg/png/webp only + ≤5MB (server is authoritative — same allowlist)
+    const MAX = 5 * 1024 * 1024
+    const ALLOWED = ['image/jpeg', 'image/png', 'image/webp']
+    const ok = []
+    let skipped = 0
+    for (const f of picked) {
+      if (!ALLOWED.includes(f.type) || f.size > MAX) { skipped++; continue }
+      ok.push(f)
+    }
+    if (skipped > 0) flash(`ข้ามไฟล์ที่ไม่รองรับ (jpeg/png/webp) หรือใหญ่เกิน 5MB (${skipped} ไฟล์)`)
+    if (ok.length === 0) return
+    setUploading(true)
+    api.uploadServiceImages(s.id, ok)
+      .then((r) => { setImages((r && r.images) || []); flash('อัปโหลดรูปแล้ว') })
+      .catch((err) => flash(err.status === 403 ? err.message : 'อัปโหลดไม่สำเร็จ: ' + err.message))
+      .finally(() => setUploading(false))
+  }
+
+  const removeImage = (img) => {
+    api.deleteServiceImage(s.id, img.id)
+      .then((r) => { setImages((r && r.images) || []); flash('ลบรูปแล้ว') })
+      .catch((err) => flash(err.status === 403 ? err.message : 'ลบรูปไม่สำเร็จ: ' + err.message))
+  }
+
   const save = () => {
     if (!name.trim()) { flash('กรุณากรอกชื่อบริการ'); return }
     setSaving(true)
@@ -1135,6 +1177,51 @@ function ServiceForm({ flash, s, categories, onDone, onCancel }) {
         <button type="button" className="seg" aria-pressed={active} onClick={() => setActive(true)}>ใช้งานอยู่</button>
         <button type="button" className="seg" aria-pressed={!active} onClick={() => setActive(false)}>ปิดใช้งาน</button>
       </div>
+
+      <label>รูปบริการ</label>
+      {editing ? (
+        <div className="svc-images">
+          <div className="svc-images-bar">
+            <input
+              ref={fileInputRef}
+              id="svc-images-input"
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              multiple
+              disabled={uploading}
+              onChange={onPickImages}
+              style={{ display: 'none' }}
+            />
+            <label htmlFor="svc-images-input" className={'btn secondary svc-images-add' + (uploading ? ' is-disabled' : '')} aria-disabled={uploading}>
+              {uploading
+                ? <><Icon name="loader" size={20} className="spin" /> กำลังอัปโหลด…</>
+                : <><Icon name="plus" size={20} /> เพิ่มรูป</>}
+            </label>
+            <div className="meta">JPG/PNG ไม่เกิน 5MB ต่อไฟล์ · เลือกได้หลายรูป</div>
+          </div>
+
+          {images.length === 0 ? (
+            <div className="svc-images-empty">ยังไม่มีรูป</div>
+          ) : (
+            <div className="svc-image-grid">
+              {images.map((img, i) => (
+                <div className="svc-thumb" key={img.id}>
+                  <img src={img.url} alt={'รูปบริการ ' + (i + 1)} loading="lazy" width={140} height={140} />
+                  <button
+                    type="button"
+                    className="svc-thumb-del"
+                    aria-label="ลบรูป"
+                    disabled={uploading}
+                    onClick={() => removeImage(img)}
+                  >×</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="meta svc-images-hint">บันทึกบริการก่อนเพื่อเพิ่มรูป</div>
+      )}
 
       <div className="btn-row">
         <button className="btn ghost" disabled={saving} onClick={onCancel}>ยกเลิก</button>

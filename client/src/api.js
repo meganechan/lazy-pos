@@ -30,7 +30,10 @@ export const clearAuth = () => {
 /* fetch wrapper: attaches bearer token, handles 401/403 globally */
 const j = async (url, opts = {}) => {
   const token = getToken()
-  const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) }
+  // For multipart (FormData) bodies, DON'T set Content-Type — let the browser add
+  // the multipart boundary. JSON callers still get the application/json header.
+  const isForm = typeof FormData !== 'undefined' && opts.body instanceof FormData
+  const headers = { ...(isForm ? {} : { 'Content-Type': 'application/json' }), ...(opts.headers || {}) }
   if (token) headers['Authorization'] = 'Bearer ' + token
 
   const r = await fetch(url, { ...opts, headers })
@@ -110,6 +113,15 @@ export const api = {
   createService: (body) => j('/api/services', { method: 'POST', body: JSON.stringify(body) }),
   deleteService: (id, opts) => j(`/api/services/${id}`, { method: 'DELETE', ...(opts ? { body: JSON.stringify(opts) } : {}) }),
   addOption: (sid, body) => j(`/api/services/${sid}/options`, { method: 'POST', body: JSON.stringify(body) }),
+  // ── service images (#29) ── each returns { images: [...] }
+  // upload: multipart/form-data, each File appended under key `images` (multiple).
+  getServiceImages: (id) => j(`/api/services/${id}/images`),
+  uploadServiceImages: (id, files) => {
+    const fd = new FormData()
+    for (const f of files) fd.append('images', f)
+    return j(`/api/services/${id}/images`, { method: 'POST', body: fd })
+  },
+  deleteServiceImage: (id, imageId) => j(`/api/services/${id}/images/${imageId}`, { method: 'DELETE' }),
   updateOption: (sid, oid, body) => j(`/api/services/${sid}/options/${oid}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteOption: (sid, oid) => j(`/api/services/${sid}/options/${oid}`, { method: 'DELETE' }),
 

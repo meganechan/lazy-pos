@@ -205,3 +205,16 @@ CREATE TABLE IF NOT EXISTS service_option (
 -- file every startup.
 ALTER TABLE store ADD COLUMN IF NOT EXISTS bolt_connection_id TEXT;
 ALTER TABLE store ADD COLUMN IF NOT EXISTS bolt_device_id TEXT;
+
+-- §issue#29 Multi-image upload for services (stored on DO Spaces / S3).
+-- Each row is one uploaded image; ON DELETE CASCADE removes images when the
+-- parent service is hard-deleted. Idempotent — bootstrap() runs this file every
+-- startup. The matching CREATE also lives in index.js bootstrap for clarity.
+CREATE TABLE IF NOT EXISTS service_image (
+  id          SERIAL PRIMARY KEY,
+  store_id    INT,
+  service_id  INT REFERENCES service(id) ON DELETE CASCADE,
+  url         TEXT NOT NULL,
+  sort_order  INT DEFAULT 0,
+  created_at  TIMESTAMPTZ DEFAULT now()
+);

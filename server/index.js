@@ -1,5 +1,11 @@
 import express from 'express';
 import pg from 'pg';
+import multer from 'multer';
+import {
+  S3Client,
+  PutObjectCommand,
+  DeleteObjectCommand,
+} from '@aws-sdk/client-s3';
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -36,10 +42,60 @@ const pool = new Pool({
 
 const q = (text, params) => pool.query(text, params);
 
+// ---- §issue#29 service images → DigitalOcean Spaces (S3-compatible) ----
+// Config is read from env at startup (injected by coolify) — never hardcoded.
+// Spaces uses virtual-hosted-style URLs on the SDK v3 default (forcePathStyle
+// false), which is the documented path for <bucket>.<region>.digitaloceanspaces.com.
+const SPACES_BUCKET = process.env.SPACES_BUCKET;
+const SPACES_REGION = process.env.SPACES_REGION;
+const SPACES_ENDPOINT = process.env.SPACES_ENDPOINT;
+const SPACES_PUBLIC_BASE = process.env.SPACES_PUBLIC_BASE;
+// Built once at module scope (not per request).
+const s3 = new S3Client({
+  region: SPACES_REGION,
+  endpoint: SPACES_ENDPOINT,
+  credentials: {
+    accessKeyId: process.env.SPACES_KEY,
+    secretAccessKey: process.env.SPACES_SECRET,
+  },
+});
+
+// multer: in-memory storage, 5MB/file, images only. Buffers go straight to S3.
+// Tight server-side mime allowlist (don't trust the client) — jpeg/png/webp only.
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const ALLOWED_IMAGE_MIME = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const uploadImages = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_IMAGE_BYTES },
+  fileFilter: (_req, file, cb) => {
+    if (ALLOWED_IMAGE_MIME.has(file.mimetype)) return cb(null, true);
+    cb(null, false); // silently skip disallowed types (no hard crash)
+  },
+});
+
+// Map a mimetype/filename to a file extension for the S3 key.
+function imageExt(file) {
+  const fromName = (file.originalname || '').split('.').pop();
+  if (fromName && /^[a-zA-Z0-9]{1,5}$/.test(fromName) && fromName !== file.originalname)
+    return fromName.toLowerCase();
+  const sub = (file.mimetype || '').split('/')[1] || 'bin';
+  return (sub === 'jpeg' ? 'jpg' : sub).toLowerCase();
+}
+
 // ---- bootstrap: schema + seed (idempotent) ----
 async function bootstrap() {
   const schema = readFileSync(join(__dirname, '../db/schema.sql'), 'utf8');
   await q(schema);
+  // §issue#29 — service images table (also in db/schema.sql; kept here so the
+  // bootstrap runner is self-contained and idempotent).
+  await q(`CREATE TABLE IF NOT EXISTS service_image (
+    id          SERIAL PRIMARY KEY,
+    store_id    INT,
+    service_id  INT REFERENCES service(id) ON DELETE CASCADE,
+    url         TEXT NOT NULL,
+    sort_order  INT DEFAULT 0,
+    created_at  TIMESTAMPTZ DEFAULT now()
+  )`);
   const { rows } = await q('SELECT count(*)::int AS n FROM store');
   if (rows[0].n === 0) {
     const seed = readFileSync(join(__dirname, '../db/seed.sql'), 'utf8');
@@ -851,7 +907,118 @@ app.get('/api/services/:id', async (req, res) => {
   if (!s) return res.status(404).json({ error: 'service not found' });
   const options = (await q(
     'SELECT * FROM service_option WHERE service_id=$1 ORDER BY id', [req.params.id])).rows;
-  res.json({ ...s, options });
+  // §issue#29 — include uploaded images (ordered) in the service detail.
+  const images = (await q(
+    `SELECT id, service_id, url, sort_order FROM service_image
+      WHERE service_id=$1 AND store_id=$2 ORDER BY sort_order, id`,
+    [req.params.id, req.user.storeId])).rows;
+  res.json({ ...s, options, images });
+});
+
+// §issue#29 — service images on DO Spaces. Helpers + 3 endpoints.
+// All are owner-only (POST/DELETE) or service-detail read-scoped (GET), and
+// every action is store-scoped: the target service must belong to the caller's
+// store or we 404 before any S3/db work (no cross-tenant leakage).
+
+// Load a service row scoped to this store, or null.
+async function serviceForStore(serviceId, storeId) {
+  return (await q(
+    'SELECT * FROM service WHERE id=$1 AND store_id=$2',
+    [serviceId, storeId])).rows[0] || null;
+}
+
+// All images for a service, store-scoped, in stable display order.
+async function imagesForService(serviceId, storeId) {
+  return (await q(
+    `SELECT id, service_id, url, sort_order FROM service_image
+      WHERE service_id=$1 AND store_id=$2 ORDER BY sort_order, id`,
+    [serviceId, storeId])).rows;
+}
+
+// GET images for a service (store-scoped). Read-guard mirrors service detail.
+app.get('/api/services/:id/images', async (req, res) => {
+  try {
+    const svc = await serviceForStore(req.params.id, req.user.storeId);
+    if (!svc) return res.status(404).json({ error: 'service not found' });
+    res.json({ images: await imagesForService(req.params.id, req.user.storeId) });
+  } catch (e) {
+    console.error('[service-images:list]', e.message);
+    res.status(500).json({ error: 'failed to list images' });
+  }
+});
+
+// POST upload one or more images (multipart field name: "images"). Owner only.
+app.post('/api/services/:id/images', requireOwner,
+  uploadImages.array('images'), async (req, res) => {
+  try {
+    const svc = await serviceForStore(req.params.id, req.user.storeId);
+    if (!svc) return res.status(404).json({ error: 'service not found' });
+    const files = (req.files || []).filter(f => ALLOWED_IMAGE_MIME.has(f.mimetype));
+    if (files.length === 0)
+      return res.status(400).json({ error: 'no valid image files (field "images"; jpeg/png/webp only, ≤5MB each)' });
+    if (!SPACES_BUCKET || !SPACES_PUBLIC_BASE)
+      return res.status(500).json({ error: 'image storage not configured' });
+
+    // Next sort_order = current max + 1, then increment per inserted image.
+    let nextOrder = (await q(
+      'SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM service_image WHERE service_id=$1 AND store_id=$2',
+      [req.params.id, req.user.storeId])).rows[0].n;
+
+    for (const file of files) {
+      const key = `services/${req.params.id}/${randomUUID()}.${imageExt(file)}`;
+      await s3.send(new PutObjectCommand({
+        Bucket: SPACES_BUCKET,
+        Key: key,
+        Body: file.buffer,
+        ContentType: file.mimetype,
+        ACL: 'public-read',
+      }));
+      const url = `${SPACES_PUBLIC_BASE}/${key}`;
+      await q(
+        `INSERT INTO service_image (store_id, service_id, url, sort_order)
+         VALUES ($1,$2,$3,$4)`,
+        [req.user.storeId, req.params.id, url, nextOrder]);
+      nextOrder += 1;
+    }
+    await audit(req.user.id, req.user.storeId, 'service_images_add', 'service', req.params.id,
+      { count: files.length });
+    res.json({ images: await imagesForService(req.params.id, req.user.storeId) });
+  } catch (e) {
+    console.error('[service-images:upload]', e.message);
+    res.status(500).json({ error: 'failed to upload images' });
+  }
+});
+
+// DELETE one image (store-scoped, owner only). Removes the S3 object + db row.
+app.delete('/api/services/:id/images/:imageId', requireOwner, async (req, res) => {
+  try {
+    const svc = await serviceForStore(req.params.id, req.user.storeId);
+    if (!svc) return res.status(404).json({ error: 'service not found' });
+    const img = (await q(
+      'SELECT * FROM service_image WHERE id=$1 AND service_id=$2 AND store_id=$3',
+      [req.params.imageId, req.params.id, req.user.storeId])).rows[0];
+    if (!img) return res.status(404).json({ error: 'image not found' });
+    // Derive the S3 key by stripping the public base prefix from the stored url.
+    const prefix = `${SPACES_PUBLIC_BASE}/`;
+    const key = img.url.startsWith(prefix) ? img.url.slice(prefix.length) : null;
+    if (key && SPACES_BUCKET) {
+      try {
+        await s3.send(new DeleteObjectCommand({ Bucket: SPACES_BUCKET, Key: key }));
+      } catch (e) {
+        // S3 delete failure must not block removing the db row (object may
+        // already be gone). Log and continue.
+        console.error('[service-images:delete s3]', e.message);
+      }
+    }
+    await q('DELETE FROM service_image WHERE id=$1 AND store_id=$2',
+      [req.params.imageId, req.user.storeId]);
+    await audit(req.user.id, req.user.storeId, 'service_image_delete', 'service', req.params.id,
+      { image_id: Number(req.params.imageId) });
+    res.json({ images: await imagesForService(req.params.id, req.user.storeId) });
+  } catch (e) {
+    console.error('[service-images:delete]', e.message);
+    res.status(500).json({ error: 'failed to delete image' });
+  }
 });
 
 // §v0.7 — create a service. Owner only. name + base_price required.
