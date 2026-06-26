@@ -328,8 +328,10 @@ export default function App() {
       <div className="content">
         {/* wide-detail header: the topbar (with its Back + title) is hidden in the
             owner-wide layout, so detail/form views would otherwise have no way back
-            and no page title. Render an in-content header bar only when wide && view. */}
-        {wide && view && (
+            and no page title. Render an in-content header bar only when wide && view.
+            Suppressed for kind==='member' — MemberDetail owns its own header so it can
+            reflect its internal detail-vs-editing sub-state (title + back-to-detail). */}
+        {wide && view && view.kind !== 'member' && (
           <div className="wide-detail-head">
             <button className="wide-back" onClick={onBack} aria-label="กลับ">
               <Icon name="chevron-left" size={20} />
@@ -342,7 +344,7 @@ export default function App() {
         )}
         {view ? (
           view.kind === 'member' ? (
-            <MemberDetail id={view.id} onNewTicket={(mid) => setView({ kind: 'newTicket', preMember: mid })} flash={flash} openTicket={openTicket} ownerPhone={ownerPhone} />
+            <MemberDetail id={view.id} onNewTicket={(mid) => setView({ kind: 'newTicket', preMember: mid })} flash={flash} openTicket={openTicket} ownerPhone={ownerPhone} wide={wide} onBack={onBack} />
           ) : view.kind === 'newMember' ? (
             <NewMember flash={flash} onDone={() => { setView(null); setTab('members') }} />
           ) : view.kind === 'newTicket' ? (
@@ -722,28 +724,46 @@ function NewMember({ flash, onDone }) {
   )
 }
 
-function MemberDetail({ id, flash, onNewTicket, openTicket, ownerPhone }) {
+function MemberDetail({ id, flash, onNewTicket, openTicket, ownerPhone, wide, onBack }) {
   const [m, setM] = useState(null)
   const [editing, setEditing] = useState(false)
   useEffect(() => {
     api.member(id).then(setM).catch(() => flash('โหลดข้อมูลสมาชิกไม่สำเร็จ'))
   }, [id])
 
+  // in-content header for wide (App suppresses its head for kind==='member', so this single
+  // header reflects the right sub-state). detail → back to list; editing → back to detail.
+  const head = (title, sub, back) => wide && (
+    <div className="wide-detail-head">
+      <button className="wide-back" onClick={back} aria-label="กลับ">
+        <Icon name="chevron-left" size={20} />
+      </button>
+      <div className="wide-detail-title">
+        <h2>{title}</h2>
+        {sub && <div className="sub">{sub}</div>}
+      </div>
+    </div>
+  )
+
   if (!m) return <Loading />
 
   if (editing) {
     return (
-      <EditMember
-        m={m}
-        flash={flash}
-        onCancel={() => setEditing(false)}
-        onSaved={(updated) => { setM((prev) => ({ ...prev, ...updated })); setEditing(false) }}
-      />
+      <>
+        {head('แก้ไขสมาชิก', 'Edit member', () => setEditing(false))}
+        <EditMember
+          m={m}
+          flash={flash}
+          onCancel={() => setEditing(false)}
+          onSaved={(updated) => { setM((prev) => ({ ...prev, ...updated })); setEditing(false) }}
+        />
+      </>
     )
   }
 
   return (
     <>
+      {head('ข้อมูลสมาชิก', 'Member', onBack)}
       <div className="card">
         <div className="row">
           <div className="avatar" style={{ width: 56, height: 56, borderRadius: '50%', background: 'var(--rose-soft)', color: 'var(--rose-dark)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 22 }}>
