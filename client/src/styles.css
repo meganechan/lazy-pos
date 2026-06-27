@@ -829,3 +829,55 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   padding: 6px 10px;
   font-size: 13px;
 }
+
+/* #35 wizard — open-bill step flow (progress indicator + step footer) */
+.wiz-steps {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 var(--space-3);
+}
+.wiz-step {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 56px;
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--muted);
+  font: inherit;
+  cursor: default;
+}
+.wiz-step:disabled { cursor: default; }
+.wiz-step.done { cursor: pointer; color: var(--ink); border-color: var(--rose); }
+.wiz-step.active {
+  color: var(--on-accent);
+  background: var(--rose);
+  border-color: var(--rose);
+  box-shadow: var(--shadow-sm);
+}
+.wiz-step-no {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  font-weight: 700;
+  font-size: 13px;
+  line-height: 1;
+}
+.wiz-step.active .wiz-step-no { border-color: var(--on-accent); }
+.wiz-step-label { font-size: 12px; font-weight: 600; text-align: center; }
+.wiz-foot {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+.wiz-foot .btn { flex: 1; min-height: 48px; }

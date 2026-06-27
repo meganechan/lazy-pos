@@ -1624,6 +1624,10 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   // modal open with a message after override_failed.
   const [pendingOverride, setPendingOverride] = useState(null)
   const [overrideErr, setOverrideErr] = useState('')
+  // #35 open-bill step wizard view-state. step 1=เลือกเมนู 2=สรุป 3=เริ่มทำงาน.
+  // editing=true → re-opening an already-started bill back into the wizard.
+  const [step, setStep] = useState(1)
+  const [editing, setEditing] = useState(false)
 
   const refresh = () => api.ticket(id).then(setT)
 
@@ -1698,6 +1702,10 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   const outstanding = Math.max(0, total - paid) || total // amount still due (fallback to total)
   const isClosed = t.status === 'closed'
   const items = t.items || []
+  // #35 wizard mode. readOnly (ownerPhone) keeps its own read-only summary path.
+  // isClosed early-returns <Receipt/> below, so `working` here is always an open,
+  // already-started bill (or a re-edit finished). Pivot on t.started_at.
+  const building = !readOnly && !isClosed && (!t.started_at || editing)
   const payments = t.payments || []
   const quote = t.quote
   const inProgress = t.status === 'in_progress'
@@ -2070,18 +2078,39 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
             {t.est_minutes ? ' (~' + N(t.est_minutes) + ' นาที)' : ''}
           </div>
         )}
-        {!readOnly && !t.started_at && !isClosed && items.length > 0 && (
-          <div className="btn-row">
-            <button className="btn" disabled={busy} onClick={startWork}><Icon name="play" size={20} /> เริ่มงาน</button>
-          </div>
-        )}
       </div>
 
       {readOnly && <ManageHint />}
 
-      {/* #31 SERVICE PICKER (image grid, grouped by category) — hidden in read-only summary */}
-      {!readOnly && (
+      {/* #35 BUILD MODE — step wizard (reuses #31 picker / cart / money blocks) */}
+      {building && (
         <>
+          {/* progress indicator [1·2·3] */}
+          <div className="wiz-steps" role="list">
+            {['เลือกเมนู', 'สรุป', 'เริ่มทำงาน'].map((label, i) => {
+              const n = i + 1
+              const active = step === n
+              const done = n < step
+              return (
+                <button
+                  key={n}
+                  type="button"
+                  role="listitem"
+                  className={'wiz-step' + (active ? ' active' : '') + (done ? ' done' : '')}
+                  aria-current={active ? 'step' : undefined}
+                  disabled={!done}
+                  onClick={() => done && setStep(n)}
+                >
+                  <span className="wiz-step-no">{done ? <Icon name="check" size={16} /> : n}</span>
+                  <span className="wiz-step-label">{label}</span>
+                </button>
+              )
+            })}
+          </div>
+
+          {/* #35 STEP 1 — เลือกเมนู: #31 service picker + ตามสั่ง custom form */}
+          {step === 1 && (
+            <>
           <div className="section-title">เพิ่มบริการ</div>
           {services.length === 0 ? (
             <div className="empty">ไม่มีบริการ</div>
@@ -2140,9 +2169,18 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
               </div>
             </div>
           )}
-        </>
-      )}
+              {/* #35 step 1 footer */}
+              <div className="wiz-foot">
+                <button className="btn" disabled={busy || items.length === 0} onClick={() => setStep(2)}>
+                  ถัดไป → สรุป <Icon name="chevron-right" size={20} />
+                </button>
+              </div>
+            </>
+          )}
 
+          {/* #35 STEP 2 — สรุป: cart review + money breakdown + discount + total */}
+          {step === 2 && (
+            <>
       {/* ITEMS in cart */}
       <div className="section-title">รายการในบิล</div>
       {items.length === 0 ? (
@@ -2328,7 +2366,7 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
         </>
       )}
 
-      {/* TOTAL */}
+      {/* #35 step 2 total + footer */}
       <div className="total-bar">
         <div className="t">ยอดสุทธิ</div>
         <div className="v tnum">{baht(total)}</div>
@@ -2336,17 +2374,107 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
       {estMinutes > 0 && (
         <div className="meta center" style={{ marginTop: 2 }}><Icon name="clock" size={14} className="ico-inline" /> ~<span className="tnum">{estMinutes}</span> นาที</div>
       )}
+              <div className="wiz-foot">
+                <button className="btn ghost" disabled={busy} onClick={() => setStep(1)}>
+                  <Icon name="chevron-left" size={20} /> แก้ไข
+                </button>
+                {editing ? (
+                  <button className="btn" disabled={busy} onClick={() => setEditing(false)}>
+                    <Icon name="check" size={20} /> เสร็จสิ้น
+                  </button>
+                ) : (
+                  <button className="btn" disabled={busy} onClick={() => setStep(3)}>
+                    เริ่มทำงาน <Icon name="chevron-right" size={20} />
+                  </button>
+                )}
+              </div>
+            </>
+          )}
 
-      {/* OWNER-PIN OVERRIDE MODAL — shared by bill / item discount + staff price */}
-      {pendingOverride && (
-        <OverridePinModal
-          reason={pendingOverride.reason}
-          err={overrideErr}
-          busy={busy}
-          onSubmit={(pin) => pendingOverride.run(pin)}
-          onCancel={() => { setPendingOverride(null); setOverrideErr('') }}
-        />
+          {/* #35 STEP 3 — เริ่มทำงาน: assign tech + confirm (unreachable while editing) */}
+          {step === 3 && !editing && (
+            <>
+              <div className="section-title">เริ่มทำงาน</div>
+              <div className="card">
+                <div className="name" style={{ fontSize: 16 }}>มอบหมายช่าง &amp; เริ่มงาน</div>
+                <div className="meta" style={{ marginTop: 6 }}>
+                  {t.assigned_name
+                    ? ('ช่างที่มอบหมาย: ' + t.assigned_name)
+                    : techs.length === 0
+                      ? 'ยังไม่มีพนักงานเข้างานวันนี้ — เช็คอินก่อนเริ่มงาน'
+                      : 'ยังไม่ได้มอบหมายช่าง — ระบบจะให้เลือกตอนกดเริ่มทำงาน'}
+                </div>
+                {!t.assigned_name && techs.length > 0 && (
+                  <div className="meta" style={{ marginTop: 4 }}>พนักงานเข้างาน: {techs.map((u) => u.name).join(', ')}</div>
+                )}
+                <div className="total-bar" style={{ marginTop: 10 }}>
+                  <div className="t">ยอดสุทธิ</div>
+                  <div className="v tnum">{baht(total)}</div>
+                </div>
+              </div>
+              <div className="wiz-foot">
+                <button className="btn ghost" disabled={busy} onClick={() => setStep(2)}>
+                  <Icon name="chevron-left" size={20} /> กลับ
+                </button>
+                <button className="btn" disabled={busy} onClick={startWork}>
+                  <Icon name="play" size={20} /> เริ่มทำงาน
+                </button>
+              </div>
+            </>
+          )}
+        </>
       )}
+
+      {/* #35 WORKING / PAY VIEW (started) + ownerPhone read-only summary (non-build) */}
+      {!building && (
+        <>
+          {/* read-only items list */}
+          <div className="section-title">รายการในบิล</div>
+          {items.length === 0 ? (
+            <div className="empty">ยังไม่มีรายการ</div>
+          ) : (
+            items.map((it) => (
+              <div className="li" key={it.id}>
+                <div className="grow">
+                  <div className="name">{it.service_name} {it.is_custom && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>ตามสั่ง</span>} {it.is_staff_price && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>ราคาพนักงาน</span>} {it.category && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>{it.category}</span>}</div>
+                  <div className="meta">จำนวน <span className="tnum">{N(it.qty)}</span> · <Icon name="clock" size={14} className="ico-inline" /> <span className="tnum">{N(it.minutes)}</span> นาที</div>
+                </div>
+                <div className="price tnum">
+                  {N(it.discount_amount) > 0 ? (
+                    <>
+                      <span style={{ textDecoration: 'line-through', color: 'var(--muted)', fontWeight: 400, marginRight: 6 }}>{baht(N(it.quoted_price) * N(it.qty))}</span>
+                      {baht(N(it.net))}
+                    </>
+                  ) : baht(N(it.quoted_price) * N(it.qty))}
+                </div>
+              </div>
+            ))
+          )}
+
+          {/* money breakdown (read-only) — working only, not ownerPhone */}
+          {!readOnly && items.length > 0 && (
+            <>
+              <div className="li">
+                <div className="grow"><div className="name">ราคารวม</div></div>
+                <div className="price tnum">{baht(t.items_gross)}</div>
+              </div>
+              {N(t.discount_total) > 0 && (
+                <div className="li">
+                  <div className="grow"><div className="name">ส่วนลด</div></div>
+                  <div className="price tnum" style={{ color: 'var(--rose-dark)' }}>-{baht(t.discount_total)}</div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* TOTAL */}
+          <div className="total-bar">
+            <div className="t">ยอดสุทธิ</div>
+            <div className="v tnum">{baht(total)}</div>
+          </div>
+          {estMinutes > 0 && (
+            <div className="meta center" style={{ marginTop: 2 }}><Icon name="clock" size={14} className="ico-inline" /> ~<span className="tnum">{estMinutes}</span> นาที</div>
+          )}
 
       {/* LINE QUOTE STEP */}
       {!(readOnly && !quote) && <div className="section-title">สรุปราคาทาง LINE</div>}
@@ -2512,7 +2640,6 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
                   ⚠️ เจ้าของร้านต้อง pair เครื่อง EDC ก่อน (ที่หน้า “ผู้ใช้”) จึงจะรับชำระแบบรูดบัตรที่เครื่องได้
                 </div>
                 <div className="btn-row">
-                  <button className="btn" disabled={busy} onClick={() => startBolt('DEEP_LINK')}>📱 ใช้ QR (มือถือ) แทน</button>
                   <button className="btn ghost" disabled={busy} onClick={() => setBoltNotPaired(false)}>ปิด</button>
                 </div>
               </div>
@@ -2533,16 +2660,11 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
                       <div className="ico"><Icon name="qr-code" size={20} /></div>
                       <div className="grow"><div>QR ที่เครื่อง EDC</div><div className="desc">โชว์ QR PromptPay บนหน้าจอเครื่อง</div></div>
                     </button>
-                    <button type="button" className="pay" onClick={() => startBolt('DEEP_LINK')}>
-                      <div className="ico"><Icon name="smartphone" size={20} /></div>
-                      <div className="grow"><div>QR PromptPay (มือถือ)</div><div className="desc">ให้ลูกค้าสแกนบนมือถือ</div></div>
-                    </button>
                   </>
                 ) : (
-                  <button type="button" className="pay" onClick={() => startBolt('DEEP_LINK')}>
-                    <div className="ico"><Icon name="qr-code" size={20} /></div>
-                    <div className="grow"><div>บัตร / QR PromptPay</div><div className="desc">สแกน QR PromptPay เพื่อชำระ</div></div>
-                  </button>
+                  <div className="note-warn">
+                    ⚠️ ต้อง pair เครื่อง EDC ก่อนถึงรับบัตร/QR ได้ (ตอนนี้รับเงินสด/ค้างชำระได้)
+                  </div>
                 )}
                 <button type="button" className="pay" onClick={() => doPay('unpaid')}>
                   <div className="ico"><Icon name="clock" size={20} /></div>
@@ -2558,12 +2680,33 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
         </>
       )}
 
-      {/* CLOSE — available once paid OR an unpaid record exists (bill not stuck) */}
-      {!readOnly && (isPaid || payments.length > 0) && (
-        <div className="btn-row">
-          <button className="btn dark" disabled={busy} onClick={closeBill}><Icon name="receipt" size={20} /> ปิดบิล / Close</button>
-        </div>
+          {/* CLOSE — available once paid OR an unpaid record exists (bill not stuck) */}
+          {!readOnly && (isPaid || payments.length > 0) && (
+            <div className="btn-row">
+              <button className="btn dark" disabled={busy} onClick={closeBill}><Icon name="receipt" size={20} /> ปิดบิล / Close</button>
+            </div>
+          )}
+
+          {/* #35 แก้ไข bill — only while started & open (closed bills are final, no edit) */}
+          {!readOnly && t.started_at && !isClosed && (
+            <div className="btn-row">
+              <button className="btn ghost" disabled={busy} onClick={() => { setEditing(true); setStep(1) }}><Icon name="pencil" size={20} /> แก้ไข bill</button>
+            </div>
+          )}
+        </>
       )}
+
+      {/* OWNER-PIN OVERRIDE MODAL — shared by wizard (bill/item discount + staff price) */}
+      {pendingOverride && (
+        <OverridePinModal
+          reason={pendingOverride.reason}
+          err={overrideErr}
+          busy={busy}
+          onSubmit={(pin) => pendingOverride.run(pin)}
+          onCancel={() => { setPendingOverride(null); setOverrideErr('') }}
+        />
+      )}
+
       <div className="spacer" />
     </>
   )
