@@ -719,3 +719,113 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 }
 .svc-thumb-set-menu:hover { background: var(--accent); }
 .svc-thumb-set-menu:disabled { opacity: .5; cursor: default; }
+
+/* #31 open-bill service grid — image-card picker grouped by category */
+.svc-grid-cat { font-size: 15px; margin-top: var(--space-4); }
+.svc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: var(--space-3);
+}
+.app.wide .svc-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+.svc-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+/* card body = the tap target that adds one at base price (≥44px via thumb + text) */
+.svc-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+  border-radius: var(--radius-sm);
+  transition: opacity .15s ease;
+}
+.svc-card-body:hover:not(:disabled) { opacity: .88; }
+.svc-card-body:disabled { cursor: default; opacity: .6; }
+.svc-card-thumb {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  width: 100%;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.svc-card-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.svc-card-ph {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  background: var(--surface-2);
+}
+.svc-card-name { font-weight: 600; line-height: 1.25; }
+.svc-card-meta { font-size: 13px; color: var(--muted); }
+/* count badge — overlay on the card corner, sibling of the body button */
+.svc-card-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 1;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--shadow-sm);
+}
+/* − / count / + stepper row — siblings of the card body (no nested buttons) */
+.svc-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.svc-step {
+  flex: 1;
+  min-width: 44px;
+  min-height: 44px;
+  background: var(--rose-soft);
+  color: var(--rose-dark);
+  border: none;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background .15s ease;
+}
+.svc-step:hover:not(:disabled) { background: #ffe9d6; }
+.svc-step:disabled { opacity: .45; cursor: default; }
+.svc-step-count { min-width: 28px; text-align: center; font-weight: 700; }
+.svc-card-staff {
+  width: 100%;
+  min-height: 40px;
+  padding: 6px 10px;
+  font-size: 13px;
+}

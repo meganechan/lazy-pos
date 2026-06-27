@@ -1703,6 +1703,15 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   const estMinutes = N(t.est_minutes) || items.reduce((a, it) => a + N(it.minutes) * (N(it.qty) || 1), 0)
   const itemCount = (sid) => items.filter((it) => N(it.service_id) === N(sid)).reduce((a, it) => a + N(it.qty), 0)
 
+  // #31 — group services by category (null/empty → "อื่นๆ") for the picker grid
+  const servicesByCategory = Object.entries(
+    services.reduce((acc, s) => {
+      const cat = (s.category && s.category.trim()) || 'อื่นๆ'
+      ;(acc[cat] = acc[cat] || []).push(s)
+      return acc
+    }, {})
+  )
+
   // edit per-item service time
   const commitMinutes = (it) => {
     const raw = minutesEdits[it.id]
@@ -2065,6 +2074,70 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
 
       {readOnly && <ManageHint />}
 
+      {/* #31 SERVICE PICKER (image grid, grouped by category) — hidden in read-only summary */}
+      {!readOnly && (
+        <>
+          <div className="section-title">เพิ่มบริการ</div>
+          {services.length === 0 ? (
+            <div className="empty">ไม่มีบริการ</div>
+          ) : (
+            servicesByCategory.map(([cat, list]) => (
+              <div key={cat}>
+                <div className="section-title svc-grid-cat">{cat}</div>
+                <div className="svc-grid">
+                  {list.map((s) => {
+                    const c = itemCount(s.id)
+                    return (
+                      <div className="svc-card" key={s.id}>
+                        {c > 0 && <span className="svc-card-badge tnum" aria-hidden="true">{c}</span>}
+                        <button type="button" className="svc-card-body" disabled={busy} onClick={() => addService(s)} aria-label={'เพิ่ม ' + s.name}>
+                          <div className="svc-card-thumb">
+                            {s.menu_image_url ? (
+                              <img src={s.menu_image_url} alt={s.name} loading="lazy" width="240" height="240" />
+                            ) : (
+                              <div className="svc-card-ph"><Icon name="sparkles" size={28} /></div>
+                            )}
+                          </div>
+                          <div className="svc-card-name">{s.name}</div>
+                          <div className="svc-card-meta tnum">{baht(s.base_price)} · {N(s.duration_min)} นาที</div>
+                        </button>
+                        <div className="svc-card-foot">
+                          <button type="button" className="svc-step" disabled={busy || c === 0} onClick={() => removeOneOfService(s)} aria-label="ลดจำนวน"><Icon name="minus" size={18} /></button>
+                          <span className="svc-step-count tnum">{c}</span>
+                          <button type="button" className="svc-step" disabled={busy} onClick={() => addService(s)} aria-label="เพิ่มจำนวน"><Icon name="plus" size={18} /></button>
+                        </div>
+                        {s.staff_price != null && (
+                          <button type="button" className="btn ghost svc-card-staff" disabled={busy} onClick={() => addStaffPrice(s)}>
+                            <Icon name="plus" size={14} /> ราคาพนักงาน ({baht(s.staff_price)})
+                          </button>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            ))
+          )}
+          {/* FREE-STYLE "ตามสั่ง" line item */}
+          {!customOpen ? (
+            <button className="btn ghost" style={{ marginTop: 10 }} onClick={() => setCustomOpen(true)}><Icon name="plus" size={20} /> รายการตามสั่ง</button>
+          ) : (
+            <div className="card" style={{ marginTop: 10 }}>
+              <label>ชื่อรายการ</label>
+              <input value={cName} onChange={(e) => setCName(e.target.value)} placeholder="เช่น แต่งลายพิเศษ" />
+              <label>ราคา (บาท)</label>
+              <input type="number" value={cPrice} onChange={(e) => setCPrice(e.target.value)} placeholder="0" />
+              <label>เวลา (นาที) — ไม่บังคับ</label>
+              <input type="number" value={cMin} onChange={(e) => setCMin(e.target.value)} placeholder="0" />
+              <div className="btn-row">
+                <button className="btn ghost" disabled={busy} onClick={() => { setCustomOpen(false); setCName(''); setCPrice(''); setCMin('') }}>ยกเลิก</button>
+                <button className="btn" disabled={busy} onClick={addCustom}>เพิ่ม</button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
       {/* ITEMS in cart */}
       <div className="section-title">รายการในบิล</div>
       {items.length === 0 ? (
@@ -2190,59 +2263,6 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
             )}
           </div>
         ))
-      )}
-
-      {/* SERVICE PICKER — hidden in read-only summary */}
-      {!readOnly && (
-        <>
-          <div className="section-title">เพิ่มบริการ</div>
-          {services.length === 0 ? (
-            <div className="empty">ไม่มีบริการ</div>
-          ) : (
-            services.map((s) => {
-              const c = itemCount(s.id)
-              return (
-                <div className="svc" key={s.id}>
-                  <div className="grow">
-                    <span style={{ fontWeight: 600 }}>{s.name}</span>
-                    {s.category && <span className="cat">{s.category}</span>}
-                    <div className="meta tnum" style={{ fontSize: 13, color: 'var(--muted)' }}>{baht(s.base_price)} · {N(s.duration_min)} นาที</div>
-                    {s.staff_price != null && (
-                      <button
-                        className="btn ghost"
-                        style={{ width: 'auto', padding: '4px 10px', marginTop: 4, fontSize: 13 }}
-                        disabled={busy}
-                        onClick={() => addStaffPrice(s)}
-                      >
-                        <Icon name="plus" size={14} /> ราคาพนักงาน ({baht(s.staff_price)})
-                      </button>
-                    )}
-                  </div>
-                  <button disabled={busy || c === 0} onClick={() => removeOneOfService(s)} aria-label="ลดจำนวน"><Icon name="minus" size={20} /></button>
-                  <span className="tnum" style={{ minWidth: 22, textAlign: 'center', fontWeight: 700 }}>{c}</span>
-                  <button disabled={busy} onClick={() => addService(s)} aria-label="เพิ่มจำนวน"><Icon name="plus" size={20} /></button>
-                </div>
-              )
-            })
-          )}
-          {/* FREE-STYLE "ตามสั่ง" line item */}
-          {!customOpen ? (
-            <button className="btn ghost" style={{ marginTop: 10 }} onClick={() => setCustomOpen(true)}><Icon name="plus" size={20} /> รายการตามสั่ง</button>
-          ) : (
-            <div className="card" style={{ marginTop: 10 }}>
-              <label>ชื่อรายการ</label>
-              <input value={cName} onChange={(e) => setCName(e.target.value)} placeholder="เช่น แต่งลายพิเศษ" />
-              <label>ราคา (บาท)</label>
-              <input type="number" value={cPrice} onChange={(e) => setCPrice(e.target.value)} placeholder="0" />
-              <label>เวลา (นาที) — ไม่บังคับ</label>
-              <input type="number" value={cMin} onChange={(e) => setCMin(e.target.value)} placeholder="0" />
-              <div className="btn-row">
-                <button className="btn ghost" disabled={busy} onClick={() => { setCustomOpen(false); setCName(''); setCPrice(''); setCMin('') }}>ยกเลิก</button>
-                <button className="btn" disabled={busy} onClick={addCustom}>เพิ่ม</button>
-              </div>
-            </div>
-          )}
-        </>
       )}
 
       {/* MONEY BREAKDOWN + BILL DISCOUNT (server-computed; never recompute client-side) */}
