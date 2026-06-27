@@ -1101,16 +1101,19 @@ function ServiceForm({ flash, s, categories, onDone, onCancel }) {
     // allow re-selecting the same file later
     if (fileInputRef.current) fileInputRef.current.value = ''
     if (picked.length === 0) return
-    // client-side guard: jpeg/png/webp only + ≤5MB (server is authoritative — same allowlist)
-    const MAX = 5 * 1024 * 1024
-    const ALLOWED = ['image/jpeg', 'image/png', 'image/webp']
+    // client-side guard: jpeg/png/webp/heic/heif + ≤10MB (server is authoritative + converts HEIC).
+    // iOS often reports an EMPTY file.type for HEIC → also accept by .heic/.heif extension.
+    const MAX = 10 * 1024 * 1024
+    const ALLOWED = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif']
+    const HEIC_EXT = /\.(heic|heif)$/i
     const ok = []
     let skipped = 0
     for (const f of picked) {
-      if (!ALLOWED.includes(f.type) || f.size > MAX) { skipped++; continue }
+      const typeOk = ALLOWED.includes(f.type) || HEIC_EXT.test(f.name || '')
+      if (!typeOk || f.size > MAX) { skipped++; continue }
       ok.push(f)
     }
-    if (skipped > 0) flash(`ข้ามไฟล์ที่ไม่รองรับ (jpeg/png/webp) หรือใหญ่เกิน 5MB (${skipped} ไฟล์)`)
+    if (skipped > 0) flash(`ข้ามไฟล์ที่ไม่รองรับ (jpeg/png/webp/heic) หรือใหญ่เกิน 10MB (${skipped} ไฟล์)`)
     if (ok.length === 0) return
     setUploading(true)
     api.uploadServiceImages(s.id, ok)
@@ -1221,7 +1224,7 @@ function ServiceForm({ flash, s, categories, onDone, onCancel }) {
               ref={fileInputRef}
               id="svc-images-input"
               type="file"
-              accept="image/jpeg,image/png,image/webp"
+              accept="image/jpeg,image/png,image/webp,image/heic,image/heif,.heic,.heif"
               multiple
               disabled={uploading}
               onChange={onPickImages}
@@ -1232,7 +1235,7 @@ function ServiceForm({ flash, s, categories, onDone, onCancel }) {
                 ? <><Icon name="loader" size={20} className="spin" /> กำลังอัปโหลด…</>
                 : <><Icon name="plus" size={20} /> เพิ่มรูป</>}
             </label>
-            <div className="meta">JPG/PNG ไม่เกิน 5MB ต่อไฟล์ · เลือกได้หลายรูป</div>
+            <div className="meta">JPG/PNG/HEIC ไม่เกิน 10MB ต่อไฟล์ · เลือกได้หลายรูป</div>
           </div>
 
           {images.length === 0 ? (
@@ -1707,6 +1710,107 @@ function OverridePinModal({ title, reason, err, busy, onSubmit, onCancel }) {
   )
 }
 
+/* ───────────────────────── Service image gallery (lightbox) ─────────────────
+ * #46 — full-screen lightbox for a service's images. Opened via long-press on a
+ * picker card (or the discoverable corner button). Fetches images on mount;
+ * prev/next (clamped) + touch swipe; Esc / backdrop / × close; focus moved into
+ * the dialog on open and restored on unmount. prefers-reduced-motion respected
+ * (CSS keeps any fade optional / disabled). */
+function ServiceGallery({ serviceId, name, onClose }) {
+  const [images, setImages] = useState(null) // null = loading, [] = loaded-empty
+  const [idx, setIdx] = useState(0)
+  const closeRef = useRef(null)
+  const prevFocus = useRef(null)
+  const imagesRef = useRef([])      // latest images for stable go() across renders
+  const swipeStart = useRef(null)   // pointerdown clientX for swipe detection
+
+  // fetch the gallery on mount (guard against setstate after unmount)
+  useEffect(() => {
+    let alive = true
+    api.getServiceImages(serviceId)
+      .then((r) => { if (alive) setImages((r && r.images) || []) })
+      .catch(() => { if (alive) setImages([]) })
+    return () => { alive = false }
+  }, [serviceId])
+
+  useEffect(() => { imagesRef.current = images || [] }, [images])
+
+  // go() uses imagesRef + functional setIdx → stable, no stale closure in keydown
+  const go = (d) => setIdx((i) => {
+    const len = imagesRef.current.length
+    if (len === 0) return 0
+    const n = i + d
+    return n < 0 ? 0 : n >= len ? len - 1 : n
+  })
+
+  // focus management + keyboard (Esc closes, arrows navigate); runs once
+  useEffect(() => {
+    prevFocus.current = typeof document !== 'undefined' ? document.activeElement : null
+    if (closeRef.current) closeRef.current.focus()
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); onClose() }
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); go(-1) }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); go(1) }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      const el = prevFocus.current
+      if (el && typeof el.focus === 'function') el.focus()
+    }
+  }, [])
+
+  const onPointerDown = (e) => { swipeStart.current = e.clientX }
+  const onPointerUp = (e) => {
+    if (swipeStart.current == null) return
+    const dx = e.clientX - swipeStart.current
+    swipeStart.current = null
+    if (Math.abs(dx) > 40) go(dx < 0 ? 1 : -1)
+  }
+
+  const count = images ? images.length : 0
+
+  return (
+    <div
+      className="lightbox"
+      role="dialog"
+      aria-modal="true"
+      aria-label={'รูปบริการ ' + (name || '')}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+      onPointerDown={onPointerDown}
+      onPointerUp={onPointerUp}
+    >
+      <button ref={closeRef} type="button" className="lightbox-close" aria-label="ปิด" onClick={onClose}>×</button>
+
+      {images === null ? (
+        <div className="lightbox-msg"><Icon name="loader" size={32} className="spin" /> กำลังโหลด…</div>
+      ) : count === 0 ? (
+        <div className="lightbox-msg">ไม่มีรูป</div>
+      ) : (
+        <>
+          <img
+            className="lightbox-img"
+            src={images[idx].url}
+            alt={(name || 'รูปบริการ') + ' รูปที่ ' + (idx + 1)}
+            draggable="false"
+          />
+          {count > 1 && (
+            <>
+              <button type="button" className="lightbox-nav prev" aria-label="รูปก่อนหน้า" disabled={idx === 0} onClick={() => go(-1)}>
+                <Icon name="chevron-left" size={28} />
+              </button>
+              <button type="button" className="lightbox-nav next" aria-label="รูปถัดไป" disabled={idx === count - 1} onClick={() => go(1)}>
+                <Icon name="chevron-right" size={28} />
+              </button>
+              <div className="lightbox-count tnum" aria-live="polite">{idx + 1} / {count}</div>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 /* ───────────────────────── Ticket / checkout ───────────────────────── */
 function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   // owner-on-phone = read-only summary: hide all mutate controls
@@ -1743,6 +1847,37 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   // editing=true → re-opening an already-started bill back into the wizard.
   const [step, setStep] = useState(1)
   const [editing, setEditing] = useState(false)
+  // #46 — service image gallery lightbox: null | { serviceId, name }
+  const [gallery, setGallery] = useState(null)
+
+  // #46 — long-press on a picker card opens the gallery (image_count > 1 only).
+  // Shared refs (one press at a time): timer, press-start point, and a flag that
+  // suppresses the click that follows a fired long-press (so it doesn't add).
+  const lpTimer = useRef(null)
+  const lpStart = useRef(null)
+  const lpSuppressClick = useRef(false)
+  const galleryEnabled = (s) => N(s.image_count) > 1
+  const openGallery = (s) => setGallery({ serviceId: s.id, name: s.name })
+  const cancelLongPress = () => { if (lpTimer.current) { clearTimeout(lpTimer.current); lpTimer.current = null } }
+  const onCardPointerDown = (e, s) => {
+    if (!galleryEnabled(s)) return
+    lpSuppressClick.current = false
+    lpStart.current = { x: e.clientX, y: e.clientY }
+    cancelLongPress()
+    lpTimer.current = setTimeout(() => {
+      lpTimer.current = null
+      lpSuppressClick.current = true // the trailing click must NOT addService
+      openGallery(s)
+    }, 450)
+  }
+  const onCardPointerMove = (e) => {
+    if (!lpStart.current || lpTimer.current == null) return
+    if (Math.abs(e.clientX - lpStart.current.x) > 10 || Math.abs(e.clientY - lpStart.current.y) > 10) cancelLongPress() // moved → treat as scroll
+  }
+  // capture-phase click guard on the card body: swallow the post-long-press click
+  const onCardClickCapture = (e) => {
+    if (lpSuppressClick.current) { e.preventDefault(); e.stopPropagation(); lpSuppressClick.current = false }
+  }
 
   const refresh = () => api.ticket(id).then(setT)
 
@@ -2266,7 +2401,30 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
                       <div className={'svc-card' + (s.is_addon ? ' is-addon' : '')} key={s.id}>
                         {c > 0 && <span className="svc-card-badge tnum" aria-hidden="true">{c}</span>}
                         {s.is_addon && <span className="svc-card-addon-badge" aria-label="รายการเสริม">เสริม</span>}
-                        <button type="button" className="svc-card-body" disabled={busy || addonLocked} onClick={() => addService(s)} aria-label={'เพิ่ม ' + s.name}>
+                        {/* #46 — discoverable/keyboard gallery entry (long-press is a bonus). image_count>1 only */}
+                        {galleryEnabled(s) && (
+                          <button
+                            type="button"
+                            className="svc-card-gallery"
+                            aria-label="ดูรูปบริการ"
+                            onClick={(e) => { e.stopPropagation(); openGallery(s) }}
+                          >
+                            <span aria-hidden="true">🖼</span> <span className="tnum">{N(s.image_count)}</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="svc-card-body"
+                          disabled={busy || addonLocked}
+                          onClick={() => addService(s)}
+                          onClickCapture={onCardClickCapture}
+                          onPointerDown={(e) => onCardPointerDown(e, s)}
+                          onPointerMove={onCardPointerMove}
+                          onPointerUp={cancelLongPress}
+                          onPointerLeave={cancelLongPress}
+                          onPointerCancel={cancelLongPress}
+                          aria-label={'เพิ่ม ' + s.name}
+                        >
                           <div className="svc-card-thumb">
                             {s.menu_image_url ? (
                               <img src={s.menu_image_url} alt={s.name} loading="lazy" width="240" height="240" />
@@ -2847,6 +3005,15 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
           busy={busy}
           onSubmit={(pin) => pendingOverride.run(pin)}
           onCancel={() => { setPendingOverride(null); setOverrideErr('') }}
+        />
+      )}
+
+      {/* #46 — service image gallery lightbox */}
+      {gallery && (
+        <ServiceGallery
+          serviceId={gallery.serviceId}
+          name={gallery.name}
+          onClose={() => setGallery(null)}
         />
       )}
 
