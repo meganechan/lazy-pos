@@ -1083,6 +1083,8 @@ function ServiceForm({ flash, s, categories, onDone, onCancel }) {
   // ── service images (#29, edit mode only) ──
   const [images, setImages] = useState([])
   const [uploading, setUploading] = useState(false)
+  // id of the image whose "ตั้งเป็นเมนู" action is in flight (disables that button)
+  const [settingMenuId, setSettingMenuId] = useState(null)
   const fileInputRef = useRef(null)
 
   // load existing images when editing an existing service
@@ -1120,6 +1122,14 @@ function ServiceForm({ flash, s, categories, onDone, onCancel }) {
     api.deleteServiceImage(s.id, img.id)
       .then((r) => { setImages((r && r.images) || []); flash('ลบรูปแล้ว') })
       .catch((err) => flash(err.status === 403 ? err.message : 'ลบรูปไม่สำเร็จ: ' + err.message))
+  }
+
+  const setMenu = (img) => {
+    setSettingMenuId(img.id)
+    api.setMenuImage(s.id, img.id)
+      .then((r) => { setImages((r && r.images) || []); flash('ตั้งเป็นรูปเมนูแล้ว') })
+      .catch((err) => flash(err.status === 403 ? err.message : 'ตั้งรูปเมนูไม่สำเร็จ: ' + err.message))
+      .finally(() => setSettingMenuId(null))
   }
 
   const save = () => {
@@ -1205,13 +1215,25 @@ function ServiceForm({ flash, s, categories, onDone, onCancel }) {
           ) : (
             <div className="svc-image-grid">
               {images.map((img, i) => (
-                <div className="svc-thumb" key={img.id}>
+                <div className={'svc-thumb' + (img.is_menu ? ' is-menu' : '')} key={img.id}>
                   <img src={img.url} alt={'รูปบริการ ' + (i + 1)} loading="lazy" width={140} height={140} />
+                  {img.is_menu && (
+                    <span className="svc-thumb-menu-badge"><span aria-hidden="true">★</span> เมนู</span>
+                  )}
+                  {!img.is_menu && (
+                    <button
+                      type="button"
+                      className="svc-thumb-set-menu"
+                      aria-label="ตั้งเป็นรูปเมนู"
+                      disabled={uploading || settingMenuId != null}
+                      onClick={() => setMenu(img)}
+                    ><span aria-hidden="true">★</span> ตั้งเป็นเมนู</button>
+                  )}
                   <button
                     type="button"
                     className="svc-thumb-del"
                     aria-label="ลบรูป"
-                    disabled={uploading}
+                    disabled={uploading || settingMenuId != null}
                     onClick={() => removeImage(img)}
                   >×</button>
                 </div>

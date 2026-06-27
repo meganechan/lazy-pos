@@ -216,5 +216,13 @@ CREATE TABLE IF NOT EXISTS service_image (
   service_id  INT REFERENCES service(id) ON DELETE CASCADE,
   url         TEXT NOT NULL,
   sort_order  INT DEFAULT 0,
+  is_menu     BOOLEAN DEFAULT false,
   created_at  TIMESTAMPTZ DEFAULT now()
 );
+
+-- §issue#31 Menu vs gallery images. is_menu marks the single "menu" (cover)
+-- image per service shown in the open-bill picker grid. Invariant: ≤1 is_menu
+-- per service+store, and a service that HAS images never ends up menu-less.
+-- Idempotent ADD COLUMN so already-deployed DBs migrate. The bootstrap runner
+-- in index.js ALSO runs this ALTER + a one-time backfill.
+ALTER TABLE service_image ADD COLUMN IF NOT EXISTS is_menu BOOLEAN DEFAULT false;
