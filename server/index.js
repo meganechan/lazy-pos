@@ -355,6 +355,30 @@ async function ticketDetail(id, storeId) {
   };
 }
 
+// §issue#31 Part 4 — close-on-pay. Shared 'closed' transition used by BOTH the
+// manual close endpoint and the auto-close-on-full-payment path (DRY). This
+// ONLY updates ticket.status/closed_at — it never touches payment rows, the
+// idempotency key, or any hash (SACRED untouched).
+async function closeTicketRow(ticketId, storeId, userId, action) {
+  await q("UPDATE ticket SET status='closed', closed_at=now() WHERE id=$1 AND store_id=$2 AND status<>'closed'",
+    [ticketId, storeId]);
+  await audit(userId, storeId, action, 'ticket', ticketId, null);
+}
+
+// Auto-close a bill once it is fully paid. Called AFTER the payment insert /
+// idempotency logic (unchanged) on every path a payment can become success
+// (cash, beam_edc, bolt poll, bolt webhook). Reads the post-payment totals and
+// flips status→'closed' ONLY when success-paid ≥ net total (>0). Unpaid/partial
+// payments are 'pending' (not counted in `paid`) so they never reach total →
+// the bill stays open, exactly as specified.
+async function maybeCloseOnFullPayment(ticketId, storeId, userId) {
+  const d = await ticketDetail(ticketId, storeId);
+  if (!d || d.status === 'closed') return;
+  if (!(Number(d.total) > 0)) return;            // empty bill / nothing due
+  if (Number(d.paid) < Number(d.total)) return;  // unpaid / partial → keep open
+  await closeTicketRow(ticketId, storeId, userId, 'ticket_auto_close_paid');
+}
+
 // §v1.4 — ticket access guard (staff see only their own bills). Resolves the
 // ticket store-scoped; owner has full access; a staff may only touch a ticket
 // they are assigned to OR opened (created_by). Writes the HTTP error itself and
@@ -594,6 +618,8 @@ app.post('/api/webhooks/beam', async (req, res) => {
     else if (FAILED) newStatus = 'failed';
     if (newStatus) {
       await q(`UPDATE payment SET status=$2 WHERE id=$1`, [p.id, newStatus]);
+      // §issue#31 Part 4 — bolt success (webhook) fully paid → auto-close.
+      if (newStatus === 'success') await maybeCloseOnFullPayment(p.ticket_id, p.store_id, null);
     }
     await audit(null, p.store_id, 'bolt_webhook', 'payment', p.id,
       { event: event || null, result: body.result || null, status: body.status || null,
@@ -1815,6 +1841,8 @@ app.post('/api/tickets/:id/payments', async (req, res) => {
       `INSERT INTO payment (ticket_id, payment_seq, method, amount, status)
        VALUES ($1,$2,'unpaid',$3,'pending')`, [req.params.id, seq, amount]);
   }
+  // §issue#31 Part 4 — auto-close once fully paid (no-op for unpaid/partial/failed).
+  await maybeCloseOnFullPayment(req.params.id, req.user.storeId, req.user.id);
   res.json(await ticketDetail(req.params.id, req.user.storeId));
 });
 
@@ -1983,6 +2011,9 @@ app.get('/api/tickets/:id/bolt-intent/:pid', requireAuth, async (req, res) => {
   await audit(req.user.id, req.user.storeId, 'payment', 'payment', p.id,
     { bolt_result: result, status });
 
+  // §issue#31 Part 4 — bolt success (poll) fully paid → auto-close.
+  if (status === 'success') await maybeCloseOnFullPayment(req.params.id, req.user.storeId, req.user.id);
+
   res.json({
     result,
     status,
@@ -2090,9 +2121,8 @@ app.post('/api/tickets/:id/close', async (req, res) => {
   // §v0.8 — scope close to this store. §v1.4 staff → own bills only.
   const t = await guardTicket(req, res);
   if (!t) return;
-  await q("UPDATE ticket SET status='closed', closed_at=now() WHERE id=$1 AND store_id=$2",
-    [req.params.id, req.user.storeId]);
-  await audit(req.user.id, req.user.storeId, 'ticket_close', 'ticket', req.params.id, null);
+  // §issue#31 Part 4 — share the close transition with auto-close (DRY).
+  await closeTicketRow(req.params.id, req.user.storeId, req.user.id, 'ticket_close');
   res.json(await ticketDetail(req.params.id, req.user.storeId));
 });
 
