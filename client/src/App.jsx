@@ -1938,7 +1938,9 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
     api.pay(id, { method, amount: total })
       .then((d) => {
         setT(d); setBusy(false)
-        flash(method === 'cash' ? 'ชำระเงินสดสำเร็จ' : 'บันทึกเป็นค้างชำระแล้ว')
+        // §issue#31 Part 4 — server auto-closes once fully paid → bounce back.
+        if (d.status === 'closed') { flash('ชำระครบ — ปิดบิลแล้ว'); onClosed && onClosed() }
+        else flash(method === 'cash' ? 'ชำระเงินสดสำเร็จ' : 'บันทึกเป็นค้างชำระแล้ว')
       })
       .catch((e) => {
         setBusy(false)
@@ -1995,7 +1997,9 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
       if (res.ticket) setT(res.ticket)
       setBolt(null)
       setBoltErr('')
-      flash('ชำระผ่าน Bolt สำเร็จ')
+      // §issue#31 Part 4 — fully paid → server closed the bill → bounce back.
+      if (res.ticket && res.ticket.status === 'closed') { flash('ชำระครบ — ปิดบิลแล้ว'); onClosed && onClosed() }
+      else flash('ชำระผ่าน Bolt สำเร็จ')
       return true
     }
     // any non-empty, non-success result is a failure enum
