@@ -101,6 +101,8 @@ async function bootstrap() {
   await q(`ALTER TABLE service_image ADD COLUMN IF NOT EXISTS is_menu BOOLEAN DEFAULT false`);
   // §issue#37 — soft-delete (void) column on ticket. Idempotent migrate.
   await q(`ALTER TABLE ticket ADD COLUMN IF NOT EXISTS voided_at TIMESTAMPTZ`);
+  // §issue#42 — add-on service flag. Idempotent ADD COLUMN migrates deployed DBs.
+  await q(`ALTER TABLE service ADD COLUMN IF NOT EXISTS is_addon BOOLEAN DEFAULT false`);
   // §issue#31 — one-time (idempotent) backfill: every service that HAS images
   // but has NO is_menu=true image gets its lowest-sort_order (tiebreak id) image
   // promoted to menu. Only touches services currently lacking a menu, so it's
@@ -1188,18 +1190,22 @@ app.put('/api/services/:id/images/:imageId/menu', requireOwner, async (req, res)
 
 // §v0.7 — create a service. Owner only. name + base_price required.
 app.post('/api/services', requireOwner, async (req, res) => {
-  const { name, category, base_price, duration_min, description, active, staff_price } = req.body || {};
+  const { name, category, base_price, duration_min, description, active, staff_price, is_addon } = req.body || {};
   if (!name || base_price == null)
     return res.status(400).json({ error: 'name and base_price required' });
+  // §issue#42 Part 3 — duration is now required (> 0).
+  if (duration_min == null || Number(duration_min) <= 0)
+    return res.status(400).json({ error: 'กรุณาระบุเวลา (นาที) มากกว่า 0' });
   // §v1.2 — staff_price is optional (null = no staff price, use base_price).
   const s = (await q(
-    `INSERT INTO service (store_id, name, category, base_price, duration_min, description, active, staff_price)
-     VALUES ($1,$2,$3,$4, COALESCE($5,30), $6, COALESCE($7, TRUE), $8)
+    `INSERT INTO service (store_id, name, category, base_price, duration_min, description, active, staff_price, is_addon)
+     VALUES ($1,$2,$3,$4, COALESCE($5,30), $6, COALESCE($7, TRUE), $8, $9)
      RETURNING *`,
     [req.user.storeId, name, category || null, base_price,
      duration_min == null ? null : duration_min, description || null,
      active === undefined ? null : !!active,
-     staff_price == null || staff_price === '' ? null : staff_price])).rows[0];
+     staff_price == null || staff_price === '' ? null : staff_price,
+     !!is_addon])).rows[0];
   await audit(req.user.id, req.user.storeId, 'service_create', 'service', s.id,
     { name: s.name, base_price: Number(s.base_price) });
   res.json(s);
@@ -1213,7 +1219,7 @@ app.put('/api/services/:id', requireOwner, async (req, res) => {
     'SELECT * FROM service WHERE id=$1 AND store_id=$2',
     [req.params.id, req.user.storeId])).rows[0];
   if (!existing) return res.status(404).json({ error: 'service not found' });
-  const { name, category, base_price, duration_min, description, active, staff_price } = req.body || {};
+  const { name, category, base_price, duration_min, description, active, staff_price, is_addon } = req.body || {};
   const next = {
     name: name === undefined ? existing.name : name,
     category: category === undefined ? existing.category : category,
@@ -1224,14 +1230,19 @@ app.put('/api/services/:id', requireOwner, async (req, res) => {
     // §v1.2 — staff_price: undefined = leave as-is; '' / null = clear to NULL.
     staff_price: staff_price === undefined ? existing.staff_price
       : (staff_price === '' || staff_price === null ? null : staff_price),
+    // §issue#42 — is_addon: undefined = leave as-is; else coerce to boolean.
+    is_addon: is_addon === undefined ? existing.is_addon : !!is_addon,
   };
+  // §issue#42 Part 3 — duration is required (> 0) after applying the update.
+  if (next.duration_min == null || Number(next.duration_min) <= 0)
+    return res.status(400).json({ error: 'กรุณาระบุเวลา (นาที) มากกว่า 0' });
   const s = (await q(
     `UPDATE service SET name=$2, category=$3, base_price=$4,
-        duration_min=$5, description=$6, active=$7, staff_price=$9
+        duration_min=$5, description=$6, active=$7, staff_price=$9, is_addon=$10
       WHERE id=$1 AND store_id=$8 RETURNING *`,
     [req.params.id, next.name, next.category, next.base_price,
      next.duration_min, next.description, next.active, req.user.storeId,
-     next.staff_price])).rows[0];
+     next.staff_price, next.is_addon])).rows[0];
   if (base_price !== undefined && Number(base_price) !== Number(existing.base_price)) {
     await audit(req.user.id, req.user.storeId, 'service_price_change', 'service', s.id,
       { old_price: Number(existing.base_price), new_price: Number(s.base_price) });
@@ -1478,9 +1489,23 @@ app.post('/api/tickets/:id/items', async (req, res) => {
   // §v0.8 — the chosen service must belong to this store too (no cross-tenant
   // service references). Doubles as the duration_min + staff_price lookup.
   const svc = (await q(
-    'SELECT duration_min, staff_price FROM service WHERE id=$1 AND store_id=$2',
+    'SELECT duration_min, staff_price, is_addon FROM service WHERE id=$1 AND store_id=$2',
     [service_id, req.user.storeId])).rows[0];
   if (!svc) return res.status(404).json({ error: 'service not found' });
+  // §issue#42 Part 2 — add-on rule (server-enforced, anti-bypass). An add-on
+  // service can only be added once the ticket already has a MAIN item: a real
+  // service that is NOT an add-on, OR a custom item (service_id IS NULL). If no
+  // such main item exists yet, reject before inserting the add-on.
+  if (svc.is_addon === true) {
+    const hasMain = (await q(
+      `SELECT 1 FROM ticket_item ti
+         LEFT JOIN service s ON s.id = ti.service_id
+        WHERE ti.ticket_id=$1 AND (ti.service_id IS NULL OR s.is_addon IS NOT TRUE)
+        LIMIT 1`,
+      [req.params.id])).rows[0];
+    if (!hasMain)
+      return res.status(400).json({ error: 'ต้องเลือกบริการหลักก่อนจึงจะเพิ่มรายการเสริมได้' });
+  }
   // §v1.2 — staff pricing. Only takes effect if the service actually has a
   // staff_price; otherwise the flag is ignored (normal price, is_staff_price
   // false). When a non-owner actually uses staff price, it costs a daily quota
