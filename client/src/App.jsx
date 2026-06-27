@@ -373,7 +373,7 @@ export default function App() {
         ) : tab === 'settings' && isOwner ? (
           <Settings flash={flash} />
         ) : (
-          <Tickets openTicket={openTicket} />
+          <Tickets openTicket={openTicket} isOwner={isOwner} />
         )}
       </div>
 
@@ -1406,19 +1406,108 @@ function ServiceDetail({ id, flash, onBack, onEdit }) {
 }
 
 /* ───────────────────────── Tickets list ───────────────────────── */
-function Tickets({ openTicket }) {
+function Tickets({ openTicket, isOwner }) {
+  // §issue#43 — bills tab filter bar. Status (all/pending/closed) + period chips.
+  // Everyone starts at today/pending. Staff are locked to TODAY (server clamps any
+  // filtered call; we also hide the period controls so the UI stays honest).
   const [list, setList] = useState(null)
-  useEffect(() => {
-    // §issue#38 — bills tab = pending only (open/in_progress/done). Closed/paid history
-    // lives in the Report bill-log now. (default api.tickets() excludes closed + voided.)
-    api.tickets().then(setList).catch(() => setList([]))
-  }, [])
+  const [status, setStatus] = useState('pending')
+  const [preset, setPreset] = useState('today')
+  const [from, setFrom] = useState(() => reportRange('today').from)
+  const [to, setTo] = useState(() => reportRange('today').to)
 
-  if (!list) return <Loading />
-  if (list.length === 0) return <div className="empty"><div className="big"><Icon name="receipt" size={32} /></div>ยังไม่มีบิลที่เปิดอยู่</div>
+  const load = (st, f, t) => {
+    setList(null)
+    api.tickets({ status: st, from: f, to: t }).then(setList).catch(() => setList([]))
+  }
+
+  // on mount: pending + today for everyone
+  useEffect(() => { load(status, from, to) }, [])
+
+  const pickStatus = (st) => {
+    setStatus(st)
+    load(st, from, to)
+  }
+
+  const pickPreset = (p) => {
+    setPreset(p)
+    if (p === 'custom') return // wait for date inputs
+    const r = reportRange(p)
+    setFrom(r.from)
+    setTo(r.to)
+    load(status, r.from, r.to)
+  }
+
+  const onCustomFrom = (v) => {
+    setFrom(v)
+    if (v && to) load(status, v, to)
+  }
+  const onCustomTo = (v) => {
+    setTo(v)
+    if (from && v) load(status, from, v)
+  }
+
+  const statuses = [
+    { v: 'all', l: 'ทั้งหมด' },
+    { v: 'pending', l: 'เปิดอยู่' },
+    { v: 'closed', l: 'ปิดแล้ว' },
+  ]
+  const presets = [
+    { v: 'today', l: 'วันนี้' },
+    { v: 'week', l: 'สัปดาห์นี้' },
+    { v: 'month', l: 'เดือนนี้' },
+    { v: 'custom', l: 'กำหนดเอง' },
+  ]
+
+  const filterBar = (
+    <div className="card" style={{ marginBottom: 12 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        {statuses.map((s) => (
+          <button
+            key={s.v}
+            className={'btn ' + (status === s.v ? 'secondary' : 'ghost')}
+            style={{ width: 'auto', padding: '8px 14px' }}
+            onClick={() => pickStatus(s.v)}
+          >
+            {s.l}
+          </button>
+        ))}
+      </div>
+      {isOwner ? (
+        <>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+            {presets.map((p) => (
+              <button
+                key={p.v}
+                className={'btn ' + (preset === p.v ? 'secondary' : 'ghost')}
+                style={{ width: 'auto', padding: '8px 14px' }}
+                onClick={() => pickPreset(p.v)}
+              >
+                {p.l}
+              </button>
+            ))}
+          </div>
+          {preset === 'custom' && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginTop: 10 }}>
+              <input type="date" value={from} onChange={(e) => onCustomFrom(e.target.value)} style={{ width: 'auto' }} />
+              <span className="meta">ถึง</span>
+              <input type="date" value={to} onChange={(e) => onCustomTo(e.target.value)} style={{ width: 'auto' }} />
+            </div>
+          )}
+        </>
+      ) : (
+        // staff: locked to today (server clamps anyway) — show a read-only label.
+        <div className="meta" style={{ marginTop: 10 }}>วันนี้</div>
+      )}
+    </div>
+  )
+
+  if (!list) return <>{filterBar}<Loading /></>
+  if (list.length === 0) return <>{filterBar}<div className="empty"><div className="big"><Icon name="receipt" size={32} /></div>ไม่มีบิลตามตัวกรอง</div></>
 
   return (
     <>
+      {filterBar}
       {list.map((t) => (
         <button type="button" className="li" key={t.id} onClick={() => openTicket(t.id)}>
           <div className="avatar">{(t.member_name || t.staff_name || '?').charAt(0).toUpperCase()}</div>
