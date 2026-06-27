@@ -136,7 +136,7 @@ export const api = {
   member: (id) => j(`/api/members/${id}`),
   addMember: (body) => j('/api/members', { method: 'POST', body: JSON.stringify(body) }),
   updateMember: (id, body) => j(`/api/members/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
-  tickets: () => j('/api/tickets'),
+  tickets: (all) => j('/api/tickets' + (all ? '?all=1' : '')),
   ticket: (id) => j(`/api/tickets/${id}`),
   newTicket: (body) => j('/api/tickets', { method: 'POST', body: JSON.stringify(body) }),
   addItem: (id, body) => j(`/api/tickets/${id}/items`, { method: 'POST', body: JSON.stringify(body) }),
