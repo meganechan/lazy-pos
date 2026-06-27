@@ -1078,6 +1078,7 @@ function ServiceForm({ flash, s, categories, onDone, onCancel }) {
   const [durationMin, setDurationMin] = useState(s ? String(N(s.duration_min)) : '')
   const [description, setDescription] = useState(s ? (s.description || '') : '')
   const [active, setActive] = useState(s ? s.active !== false : true)
+  const [isAddon, setIsAddon] = useState(s ? !!s.is_addon : false)
   const [saving, setSaving] = useState(false)
 
   // ── service images (#29, edit mode only) ──
@@ -1134,15 +1135,18 @@ function ServiceForm({ flash, s, categories, onDone, onCancel }) {
 
   const save = () => {
     if (!name.trim()) { flash('กรุณากรอกชื่อบริการ'); return }
+    // #42 — duration is required and must be > 0 (server is authoritative too)
+    if (!(N(durationMin) > 0)) { flash('กรุณาระบุเวลา (นาที) มากกว่า 0'); return }
     setSaving(true)
     const body = {
       name: name.trim(),
       category: category.trim() || undefined,
       base_price: N(basePrice),
       staff_price: staffPrice === '' ? undefined : N(staffPrice),
-      duration_min: durationMin === '' ? undefined : N(durationMin),
+      duration_min: N(durationMin),
       description: description.trim() || undefined,
       active,
+      is_addon: isAddon,
     }
     const req = editing ? api.updateService(s.id, body) : api.createService(body)
     req
@@ -1161,6 +1165,20 @@ function ServiceForm({ flash, s, categories, onDone, onCancel }) {
       <datalist id="svc-cat-list">
         {(categories || []).map((c) => <option key={c} value={c} />)}
       </datalist>
+      {/* #42 — tap-to-fill chips for existing categories (free-text input still works) */}
+      {(categories || []).length > 0 && (
+        <div className="chip-row" role="group" aria-label="เลือกหมวด">
+          {(categories || []).map((c) => (
+            <button
+              type="button"
+              key={c}
+              className={'chip' + (category.trim() === c ? ' active' : '')}
+              aria-pressed={category.trim() === c}
+              onClick={() => setCategory(c)}
+            >{c}</button>
+          ))}
+        </div>
+      )}
 
       <div style={{ display: 'flex', gap: 12 }}>
         <div style={{ flex: 1 }}>
@@ -1173,7 +1191,7 @@ function ServiceForm({ flash, s, categories, onDone, onCancel }) {
           <div className="meta" style={{ marginTop: -6, marginBottom: 8 }}>ว่าง = ใช้ราคาปกติ</div>
         </div>
         <div style={{ flex: 1 }}>
-          <label htmlFor="svc-duration">เวลา (นาที)</label>
+          <label htmlFor="svc-duration">เวลา (นาที) *</label>
           <input id="svc-duration" name="duration-min" type="number" value={durationMin} onChange={(e) => setDurationMin(e.target.value)} placeholder="0" />
           <div className="meta" style={{ marginTop: -6, marginBottom: 8 }}>เวลาโดยประมาณต่อ 1 ครั้ง</div>
         </div>
@@ -1186,6 +1204,13 @@ function ServiceForm({ flash, s, categories, onDone, onCancel }) {
       <div className="segmented" role="group" aria-label="สถานะ">
         <button type="button" className="seg" aria-pressed={active} onClick={() => setActive(true)}>ใช้งานอยู่</button>
         <button type="button" className="seg" aria-pressed={!active} onClick={() => setActive(false)}>ปิดใช้งาน</button>
+      </div>
+
+      {/* #42 — add-on flag: an add-on service requires a main item on the bill first */}
+      <label>เป็นรายการเสริม (ต้องมีบริการหลักก่อน)</label>
+      <div className="segmented" role="group" aria-label="เป็นรายการเสริม">
+        <button type="button" className="seg" aria-pressed={isAddon} onClick={() => setIsAddon(true)}>ใช่</button>
+        <button type="button" className="seg" aria-pressed={!isAddon} onClick={() => setIsAddon(false)}>ไม่ใช่</button>
       </div>
 
       <label>รูปบริการ</label>
@@ -1713,6 +1738,10 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   const estMinutes = N(t.est_minutes) || items.reduce((a, it) => a + N(it.minutes) * (N(it.qty) || 1), 0)
   const itemCount = (sid) => items.filter((it) => N(it.service_id) === N(sid)).reduce((a, it) => a + N(it.qty), 0)
 
+  // #42 — cart has at least one NON-add-on (main) item. Custom items count as main.
+  // add-on service cards stay locked until a main item exists (server is authoritative).
+  const hasMain = items.some((it) => it.is_custom || !(services.find((s) => N(s.id) === N(it.service_id))?.is_addon))
+
   // #31 — group services by category (null/empty → "อื่นๆ") for the picker grid
   const servicesByCategory = Object.entries(
     services.reduce((acc, s) => {
@@ -1801,6 +1830,8 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   }
 
   const addService = (s) => {
+    // #42 — defense-in-depth: block add-on without a main item (server is authoritative)
+    if (s.is_addon && !hasMain) { flash('ต้องเลือกบริการหลักก่อน'); return }
     setBusy(true)
     api.addItem(id, { service_id: s.id, qty: 1, quoted_price: N(s.base_price) })
       .then((d) => { setT(d); setBusy(false) })
@@ -2140,10 +2171,13 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
                 <div className="svc-grid">
                   {list.map((s) => {
                     const c = itemCount(s.id)
+                    // #42 — add-on cards lock until the bill has a main item
+                    const addonLocked = !!s.is_addon && !hasMain
                     return (
-                      <div className="svc-card" key={s.id}>
+                      <div className={'svc-card' + (s.is_addon ? ' is-addon' : '')} key={s.id}>
                         {c > 0 && <span className="svc-card-badge tnum" aria-hidden="true">{c}</span>}
-                        <button type="button" className="svc-card-body" disabled={busy} onClick={() => addService(s)} aria-label={'เพิ่ม ' + s.name}>
+                        {s.is_addon && <span className="svc-card-addon-badge" aria-label="รายการเสริม">เสริม</span>}
+                        <button type="button" className="svc-card-body" disabled={busy || addonLocked} onClick={() => addService(s)} aria-label={'เพิ่ม ' + s.name}>
                           <div className="svc-card-thumb">
                             {s.menu_image_url ? (
                               <img src={s.menu_image_url} alt={s.name} loading="lazy" width="240" height="240" />
@@ -2154,10 +2188,11 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
                           <div className="svc-card-name">{s.name}</div>
                           <div className="svc-card-meta tnum">{baht(s.base_price)} · {N(s.duration_min)} นาที</div>
                         </button>
+                        {addonLocked && <div className="svc-card-addon-hint">ต้องเลือกบริการหลักก่อน</div>}
                         <div className="svc-card-foot">
                           <button type="button" className="svc-step" disabled={busy || c === 0} onClick={() => removeOneOfService(s)} aria-label="ลดจำนวน"><Icon name="minus" size={18} /></button>
                           <span className="svc-step-count tnum">{c}</span>
-                          <button type="button" className="svc-step" disabled={busy} onClick={() => addService(s)} aria-label="เพิ่มจำนวน"><Icon name="plus" size={18} /></button>
+                          <button type="button" className="svc-step" disabled={busy || addonLocked} onClick={() => addService(s)} aria-label="เพิ่มจำนวน"><Icon name="plus" size={18} /></button>
                         </div>
                         {s.staff_price != null && (
                           <button type="button" className="btn ghost svc-card-staff" disabled={busy} onClick={() => addStaffPrice(s)}>

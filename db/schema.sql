@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS service (
   category     TEXT,
   base_price   NUMERIC(10,2) NOT NULL DEFAULT 0,
   duration_min INTEGER NOT NULL DEFAULT 30,
-  active       BOOLEAN NOT NULL DEFAULT TRUE
+  active       BOOLEAN NOT NULL DEFAULT TRUE,
+  is_addon     BOOLEAN DEFAULT false
 );
 
 CREATE TABLE IF NOT EXISTS ticket (
@@ -227,3 +228,9 @@ CREATE TABLE IF NOT EXISTS service_image (
 -- Idempotent ADD COLUMN so already-deployed DBs migrate. The bootstrap runner
 -- in index.js ALSO runs this ALTER + a one-time backfill.
 ALTER TABLE service_image ADD COLUMN IF NOT EXISTS is_menu BOOLEAN DEFAULT false;
+
+-- §issue#42 Add-on services. is_addon marks a service that can only be added to
+-- a ticket that already has a main (non-add-on) item — enforced server-side in
+-- POST /api/tickets/:id/items. Idempotent ADD COLUMN so deployed DBs migrate.
+-- The bootstrap runner in index.js ALSO runs this ALTER.
+ALTER TABLE service ADD COLUMN IF NOT EXISTS is_addon BOOLEAN DEFAULT false;
