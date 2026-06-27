@@ -880,6 +880,41 @@ app.get('/api/reports', requireOwner, async (req, res) => {
       GROUP BY p.created_at::date
       ORDER BY p.created_at::date`, params)).rows;
 
+  // §issue#38 — bill log: every bill with a SUCCESS payment in range (payWhere already
+  // excludes voided + scopes store + success-in-range). Who / which services / amount /
+  // method, per bill. Two queries (avoid join row-multiplication) stitched in JS.
+  const billRows = (await q(
+    `SELECT t.id, t.created_at,
+            COALESCE(m.name,'ลูกค้าทั่วไป') AS member_name,
+            COALESCE(u.name, t.staff_name, '—') AS staff_name,
+            SUM(p.amount)::float AS amount,
+            string_agg(DISTINCT p.method, ',') AS methods,
+            MAX(p.created_at) AS paid_at
+       FROM payment p
+       JOIN ticket t ON t.id = p.ticket_id
+       LEFT JOIN member m ON m.id = t.member_id
+       LEFT JOIN app_user u ON u.id = COALESCE(t.assigned_user_id, t.created_by)
+      WHERE ${payWhere}
+      GROUP BY t.id, m.name, u.name, t.staff_name
+      ORDER BY MAX(p.created_at) DESC
+      LIMIT 200`, params)).rows;
+  let billLog = [];
+  if (billRows.length) {
+    const billIds = billRows.map(b => b.id);
+    const itemRows = (await q(
+      `SELECT ti.ticket_id, COALESCE(s.name, ti.custom_name, 'ตามสั่ง') AS name, ti.qty::int AS qty
+         FROM ticket_item ti LEFT JOIN service s ON s.id = ti.service_id
+        WHERE ti.ticket_id = ANY($1) ORDER BY ti.id`, [billIds])).rows;
+    const svcByTicket = {};
+    for (const r of itemRows) (svcByTicket[r.ticket_id] = svcByTicket[r.ticket_id] || []).push({ name: r.name, qty: r.qty });
+    billLog = billRows.map(b => ({
+      id: b.id, created_at: b.created_at, paid_at: b.paid_at,
+      member_name: b.member_name, staff_name: b.staff_name, amount: b.amount,
+      methods: (b.methods || '').split(',').filter(Boolean),
+      services: svcByTicket[b.id] || [],
+    }));
+  }
+
   const by_method = methodRows
     .filter(r => r.method !== 'unpaid')
     .map(r => ({ method: r.method, amount: r.amount, count: r.bills, txns: r.txns }));
@@ -897,6 +932,7 @@ app.get('/api/reports', requireOwner, async (req, res) => {
     by_service: byService.map(r => ({ service_id: r.service_id, name: r.name, category: r.category || 'อื่นๆ', amount: r.amount, qty: r.qty })),
     discounts: { total: discRow.total, events: discEvents },
     daily,
+    bills: billLog,
   });
 });
 

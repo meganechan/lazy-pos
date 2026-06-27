@@ -367,7 +367,7 @@ export default function App() {
         ) : tab === 'users' && isOwner ? (
           <Users flash={flash} canManage={canManage} ownerPhone={ownerPhone} wide={wide} onNewUser={() => setView({ kind: 'newUser' })} onEditUser={(u) => setView({ kind: 'editUser', u })} />
         ) : tab === 'reports' && isOwner ? (
-          <Report flash={flash} />
+          <Report flash={flash} openTicket={openTicket} />
         ) : tab === 'audit' && isOwner ? (
           <AuditLog flash={flash} wide={wide} />
         ) : tab === 'settings' && isOwner ? (
@@ -1384,12 +1384,13 @@ function ServiceDetail({ id, flash, onBack, onEdit }) {
 function Tickets({ openTicket }) {
   const [list, setList] = useState(null)
   useEffect(() => {
-    // "บิลทั้งหมด" = history → include closed (paid/auto-closed) bills too.
-    api.tickets(true).then(setList).catch(() => setList([]))
+    // §issue#38 — bills tab = pending only (open/in_progress/done). Closed/paid history
+    // lives in the Report bill-log now. (default api.tickets() excludes closed + voided.)
+    api.tickets().then(setList).catch(() => setList([]))
   }, [])
 
   if (!list) return <Loading />
-  if (list.length === 0) return <div className="empty"><div className="big"><Icon name="receipt" size={32} /></div>ยังไม่มีบิล</div>
+  if (list.length === 0) return <div className="empty"><div className="big"><Icon name="receipt" size={32} /></div>ยังไม่มีบิลที่เปิดอยู่</div>
 
   return (
     <>
@@ -3588,7 +3589,7 @@ function reportRange(preset) {
   return { from: today, to: today } // custom defaults to today until edited
 }
 
-function Report({ flash }) {
+function Report({ flash, openTicket }) {
   const [preset, setPreset] = useState('today')
   const [from, setFrom] = useState(() => reportRange('today').from)
   const [to, setTo] = useState(() => reportRange('today').to)
@@ -3659,6 +3660,7 @@ function Report({ flash }) {
   const outstanding = data.outstanding || {}
   const byStaff = data.by_staff || []
   const byService = data.by_service || []
+  const bills = data.bills || [] // §issue#38 bill log
   const discounts = data.discounts || {}
   const daily = data.daily || []
   const noRevenue = N(totals.revenue) === 0 && N(totals.paid_bills) === 0
@@ -3804,6 +3806,42 @@ function Report({ flash }) {
               ))}
             </div>
           </>
+        )}
+      </div>
+
+      {/* §issue#38 — bill log: who did what / which menu / amount / method, per bill */}
+      <div className="card" style={{ marginBottom: 12 }}>
+        <h3 style={{ margin: '0 0 10px' }}>บิล/รายการขาย</h3>
+        {bills.length === 0 ? (
+          <div className="meta" style={{ color: 'var(--muted)' }}>ไม่มีบิลในช่วงนี้</div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {bills.map((b) => (
+              <button
+                type="button"
+                className="li"
+                key={b.id}
+                onClick={() => openTicket && openTicket(b.id)}
+                style={{ alignItems: 'flex-start', textAlign: 'left' }}
+              >
+                <div className="grow">
+                  <div className="name">{b.member_name} <span className="meta" style={{ fontWeight: 400 }}>· บิล #{b.id}</span></div>
+                  <div className="meta">{fmtDate(b.paid_at || b.created_at)} · ช่าง: {b.staff_name}</div>
+                  {b.services.length > 0 && (
+                    <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      {b.services.map((s, i) => (
+                        <span key={i} className="cat">{s.name}{s.qty > 1 ? ' ×' + s.qty : ''}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div style={{ textAlign: 'right', flex: 'none' }}>
+                  <div className="price tnum">{baht(b.amount)}</div>
+                  <div className="meta">{b.methods.map((m) => REPORT_METHOD_TH[m] || m).join(', ')}</div>
+                </div>
+              </button>
+            ))}
+          </div>
         )}
       </div>
 
