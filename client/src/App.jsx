@@ -1942,6 +1942,15 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   }
 
   // Cash / unpaid only. Card payments go through the Beam Bolt flow (startBolt).
+  // §issue#37 — owner soft-deletes (voids) the bill. Confirm → DELETE → bounce back.
+  const voidBill = () => {
+    if (!window.confirm('ลบบิลนี้? กู้คืนไม่ได้จากหน้าจอ')) return
+    setBusy(true)
+    api.voidTicket(id)
+      .then(() => { flash('ลบบิลแล้ว'); onClosed && onClosed() })
+      .catch((e) => { setBusy(false); flash('ลบไม่สำเร็จ: ' + e.message) })
+  }
+
   const doPay = (method) => {
     setBusy(true)
     api.pay(id, { method, amount: total })
@@ -2081,6 +2090,15 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
       </div>
 
       {readOnly && <ManageHint />}
+
+      {/* §issue#37 — owner-only soft-delete (void). Staff never see this. */}
+      {isOwner && (
+        <div className="btn-row">
+          <button className="btn ghost" disabled={busy} style={{ width: 'auto', color: 'var(--danger)' }} onClick={voidBill}>
+            <Icon name="alert-triangle" size={18} /> ลบบิล
+          </button>
+        </div>
+      )}
 
       {/* #35 BUILD MODE — step wizard (reuses #31 picker / cart / money blocks) */}
       {building && (

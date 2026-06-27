@@ -188,6 +188,7 @@ export const api = {
   cancelBoltIntent: (ticketId, pid) => j(`/api/tickets/${ticketId}/bolt-intent/${pid}/cancel`, { method: 'POST' }),
 
   close: (id) => j(`/api/tickets/${id}/close`, { method: 'POST' }),
+  voidTicket: (id) => j(`/api/tickets/${id}`, { method: 'DELETE' }),
 }
 
 // Display-only money formatter. Defined once at module scope (not per-render).

@@ -99,6 +99,8 @@ async function bootstrap() {
   )`);
   // §issue#31 — menu image flag. Idempotent ADD COLUMN migrates deployed DBs.
   await q(`ALTER TABLE service_image ADD COLUMN IF NOT EXISTS is_menu BOOLEAN DEFAULT false`);
+  // §issue#37 — soft-delete (void) column on ticket. Idempotent migrate.
+  await q(`ALTER TABLE ticket ADD COLUMN IF NOT EXISTS voided_at TIMESTAMPTZ`);
   // §issue#31 — one-time (idempotent) backfill: every service that HAS images
   // but has NO is_menu=true image gets its lowest-sort_order (tiebreak id) image
   // promoted to menu. Only touches services currently lacking a menu, so it's
@@ -780,12 +782,13 @@ app.get('/api/reports', requireOwner, async (req, res) => {
   const params = [storeId, from, to];
   // payment-based filter: success payments whose created_at is in range.
   const payWhere =
-    `p.status='success' AND t.store_id=$1
+    `p.status='success' AND t.store_id=$1 AND t.voided_at IS NULL
        AND ($2::date IS NULL OR p.created_at >= $2::date)
        AND ($3::date IS NULL OR p.created_at < ($3::date + INTERVAL '1 day'))`;
   // ticket-based filter (for service / discount breakdowns): tickets created in range.
+  // §issue#37 — voided (soft-deleted) tickets excluded from ALL report aggregates.
   const tWhere =
-    `t.store_id=$1
+    `t.store_id=$1 AND t.voided_at IS NULL
        AND ($2::date IS NULL OR t.created_at >= $2::date)
        AND ($3::date IS NULL OR t.created_at < ($3::date + INTERVAL '1 day'))`;
 
@@ -904,14 +907,14 @@ app.get('/api/summary', async (req, res) => {
     `SELECT COALESCE(SUM(p.amount),0)::float AS revenue, COUNT(*)::int AS txns
        FROM payment p JOIN ticket t ON t.id = p.ticket_id
       WHERE p.status='success' AND p.created_at::date = now()::date
-        AND t.store_id=$1`, [storeId])).rows[0];
+        AND t.store_id=$1 AND t.voided_at IS NULL`, [storeId])).rows[0];
   const members = (await q(
     'SELECT COUNT(*)::int n FROM member WHERE store_id=$1', [storeId])).rows[0].n;
   // §v1.4 — staff see only their own open bills in the count; owner sees all.
   const staffScope = req.user.role !== 'owner';
   const openTickets = (await q(
     `SELECT COUNT(*)::int n FROM ticket
-      WHERE status IN ('open','in_progress','done') AND store_id=$1
+      WHERE status IN ('open','in_progress','done') AND store_id=$1 AND voided_at IS NULL
         ${staffScope ? 'AND (assigned_user_id=$2 OR created_by=$2)' : ''}`,
     staffScope ? [storeId, req.user.id] : [storeId])).rows[0].n;
   const services = (await q(
@@ -1379,7 +1382,7 @@ app.get('/api/members/:id', async (req, res) => {
     `SELECT t.id, t.status, t.created_at, t.closed_at,
             COALESCE(SUM(p.amount) FILTER (WHERE p.status='success'),0)::float AS spent
        FROM ticket t LEFT JOIN payment p ON p.ticket_id = t.id
-      WHERE t.member_id=$1 AND t.store_id=$2
+      WHERE t.member_id=$1 AND t.store_id=$2 AND t.voided_at IS NULL
       GROUP BY t.id ORDER BY t.created_at DESC`,
     [req.params.id, req.user.storeId])).rows;
   res.json({ ...m, history });
@@ -1403,7 +1406,7 @@ app.get('/api/tickets', async (req, res) => {
        FROM ticket t
        LEFT JOIN member m ON m.id = t.member_id
        LEFT JOIN ticket_item ti ON ti.ticket_id = t.id
-      WHERE t.status IN ${statuses} AND t.store_id=$1
+      WHERE t.status IN ${statuses} AND t.store_id=$1 AND t.voided_at IS NULL
         ${staffScope ? 'AND (t.assigned_user_id=$2 OR t.created_by=$2)' : ''}
       GROUP BY t.id, m.name ORDER BY (t.status='closed') ASC, t.created_at DESC`,
     staffScope ? [req.user.storeId, req.user.id] : [req.user.storeId])).rows;
@@ -2134,6 +2137,20 @@ app.post('/api/tickets/:id/close', async (req, res) => {
   res.json(await ticketDetail(req.params.id, req.user.storeId));
 });
 
+// §issue#37 — owner soft-deletes (voids) a bill. Sets voided_at; the row AND its
+// payment rows are KEPT (Nothing is Deleted + payment/idempotency integrity). Every
+// list/report/summary/queue/member-history query filters `voided_at IS NULL`, so a
+// voided bill disappears everywhere. Owner-only, store-scoped (cross-tenant → 404).
+app.delete('/api/tickets/:id', requireOwner, async (req, res) => {
+  const t = (await q('SELECT id FROM ticket WHERE id=$1 AND store_id=$2',
+    [req.params.id, req.user.storeId])).rows[0];
+  if (!t) return res.status(404).json({ error: 'ticket not found' });
+  await q('UPDATE ticket SET voided_at=now() WHERE id=$1 AND store_id=$2 AND voided_at IS NULL',
+    [req.params.id, req.user.storeId]);
+  await audit(req.user.id, req.user.storeId, 'ticket_void', 'ticket', req.params.id, null);
+  res.json({ ok: true });
+});
+
 // §v0.6 — Queue board. Computed live from app_user + ticket. A technician is
 // "busy" iff there is an in_progress ticket assigned to them with started_at set
 // whose busy_until (started_at + est_minutes*60000) is still in the future.
@@ -2155,7 +2172,7 @@ app.get('/api/queue', async (req, res) => {
   const tickets = (await q(
     `SELECT t.*, m.name AS member_name
        FROM ticket t LEFT JOIN member m ON m.id = t.member_id
-      WHERE t.status IN ('open','in_progress') AND t.store_id=$1
+      WHERE t.status IN ('open','in_progress') AND t.store_id=$1 AND t.voided_at IS NULL
       ORDER BY t.created_at`, [storeId])).rows;
 
   const labelOf = (t) =>
