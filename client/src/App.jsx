@@ -1384,11 +1384,12 @@ function ServiceDetail({ id, flash, onBack, onEdit }) {
 function Tickets({ openTicket }) {
   const [list, setList] = useState(null)
   useEffect(() => {
-    api.tickets().then(setList).catch(() => setList([]))
+    // "บิลทั้งหมด" = history → include closed (paid/auto-closed) bills too.
+    api.tickets(true).then(setList).catch(() => setList([]))
   }, [])
 
   if (!list) return <Loading />
-  if (list.length === 0) return <div className="empty"><div className="big"><Icon name="receipt" size={32} /></div>ยังไม่มีบิลที่เปิดอยู่</div>
+  if (list.length === 0) return <div className="empty"><div className="big"><Icon name="receipt" size={32} /></div>ยังไม่มีบิล</div>
 
   return (
     <>

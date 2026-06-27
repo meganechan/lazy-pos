@@ -1388,6 +1388,14 @@ app.get('/api/members/:id', async (req, res) => {
 app.get('/api/tickets', async (req, res) => {
   // §v0.8 — store-scoped list. §v1.4 — staff see only their own bills
   // (assigned to them OR opened by them); owner sees the whole store.
+  // §fix(#34 regression) — DEFAULT lists only OPEN bills (this endpoint also feeds
+  // the Dashboard "บิลที่เปิดอยู่" list + the ticket picker). ?all=1 ADDS 'closed'
+  // for the "บิลทั้งหมด" history view, so auto-closed paid bills don't vanish there;
+  // closed bills sort to the bottom. Dashboard keeps the default (open-only).
+  const all = req.query.all === '1' || req.query.all === 'true';
+  const statuses = all
+    ? "('open','in_progress','done','closed')"
+    : "('open','in_progress','done')";
   const staffScope = req.user.role !== 'owner';
   const rows = (await q(
     `SELECT t.*, m.name AS member_name,
@@ -1395,9 +1403,9 @@ app.get('/api/tickets', async (req, res) => {
        FROM ticket t
        LEFT JOIN member m ON m.id = t.member_id
        LEFT JOIN ticket_item ti ON ti.ticket_id = t.id
-      WHERE t.status IN ('open','in_progress','done') AND t.store_id=$1
+      WHERE t.status IN ${statuses} AND t.store_id=$1
         ${staffScope ? 'AND (t.assigned_user_id=$2 OR t.created_by=$2)' : ''}
-      GROUP BY t.id, m.name ORDER BY t.created_at DESC`,
+      GROUP BY t.id, m.name ORDER BY (t.status='closed') ASC, t.created_at DESC`,
     staffScope ? [req.user.storeId, req.user.id] : [req.user.storeId])).rows;
   res.json(rows);
 });
