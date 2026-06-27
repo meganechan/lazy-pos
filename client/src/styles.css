@@ -673,3 +673,49 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 }
 .svc-thumb-del:hover { background: var(--danger); }
 .svc-thumb-del:disabled { opacity: .5; cursor: default; }
+
+/* ── menu/cover image (#31) ──
+   The cover image shows a "★ เมนู" badge top-left (clear of the top-right delete
+   button). Non-cover thumbs show a "★ ตั้งเป็นเมนู" action along the bottom edge,
+   so it never collides with the delete control. */
+.svc-thumb.is-menu {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent), var(--shadow-sm);
+}
+.svc-thumb-menu-badge {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  box-shadow: var(--shadow-sm);
+}
+.svc-thumb-set-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: var(--space-2) var(--space-1);
+  border: none;
+  background: rgba(24, 24, 27, .62);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition: background .15s ease;
+}
+.svc-thumb-set-menu:hover { background: var(--accent); }
+.svc-thumb-set-menu:disabled { opacity: .5; cursor: default; }

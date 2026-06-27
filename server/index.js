@@ -94,8 +94,27 @@ async function bootstrap() {
     service_id  INT REFERENCES service(id) ON DELETE CASCADE,
     url         TEXT NOT NULL,
     sort_order  INT DEFAULT 0,
+    is_menu     BOOLEAN DEFAULT false,
     created_at  TIMESTAMPTZ DEFAULT now()
   )`);
+  // §issue#31 — menu image flag. Idempotent ADD COLUMN migrates deployed DBs.
+  await q(`ALTER TABLE service_image ADD COLUMN IF NOT EXISTS is_menu BOOLEAN DEFAULT false`);
+  // §issue#31 — one-time (idempotent) backfill: every service that HAS images
+  // but has NO is_menu=true image gets its lowest-sort_order (tiebreak id) image
+  // promoted to menu. Only touches services currently lacking a menu, so it's
+  // safe to run on every boot.
+  await q(`
+    UPDATE service_image SET is_menu = true
+     WHERE id IN (
+       SELECT DISTINCT ON (service_id) id
+         FROM service_image
+        WHERE service_id IN (
+          SELECT service_id FROM service_image
+           GROUP BY service_id
+          HAVING bool_or(is_menu) IS NOT TRUE
+        )
+        ORDER BY service_id, sort_order, id
+     )`);
   const { rows } = await q('SELECT count(*)::int AS n FROM store');
   if (rows[0].n === 0) {
     const seed = readFileSync(join(__dirname, '../db/seed.sql'), 'utf8');
@@ -880,10 +899,20 @@ app.get('/api/summary', async (req, res) => {
 app.get('/api/services', async (req, res) => {
   const all = req.query.all === '1' || req.query.all === 'true';
   // §v0.8 — scope catalog to this store. Options inherit scope via service ids.
+  // §issue#31 — menu_image_url per service (store-scoped). LEFT JOIN LATERAL
+  // picks each service's is_menu image url; NULL when it has none. The open-bill
+  // picker grid (Part 3) reads this off the list response.
+  const menuJoin = `LEFT JOIN LATERAL (
+        SELECT url FROM service_image si
+         WHERE si.service_id = service.id AND si.store_id = $1 AND si.is_menu = true
+         ORDER BY si.sort_order, si.id LIMIT 1
+      ) mi ON true`;
   const services = (await q(
     all
-      ? 'SELECT * FROM service WHERE store_id=$1 ORDER BY category, name'
-      : 'SELECT * FROM service WHERE store_id=$1 AND active ORDER BY category, name',
+      ? `SELECT service.*, mi.url AS menu_image_url FROM service ${menuJoin}
+          WHERE store_id=$1 ORDER BY category, name`
+      : `SELECT service.*, mi.url AS menu_image_url FROM service ${menuJoin}
+          WHERE store_id=$1 AND active ORDER BY category, name`,
     [req.user.storeId])).rows;
   if (services.length === 0) return res.json([]);
   const ids = services.map(s => s.id);
@@ -908,11 +937,10 @@ app.get('/api/services/:id', async (req, res) => {
   const options = (await q(
     'SELECT * FROM service_option WHERE service_id=$1 ORDER BY id', [req.params.id])).rows;
   // §issue#29 — include uploaded images (ordered) in the service detail.
-  const images = (await q(
-    `SELECT id, service_id, url, sort_order FROM service_image
-      WHERE service_id=$1 AND store_id=$2 ORDER BY sort_order, id`,
-    [req.params.id, req.user.storeId])).rows;
-  res.json({ ...s, options, images });
+  // §issue#31 — images carry is_menu; menu_image_url = url of the is_menu image.
+  const images = await imagesForService(req.params.id, req.user.storeId);
+  const menuImg = images.find(im => im.is_menu);
+  res.json({ ...s, options, images, menu_image_url: menuImg ? menuImg.url : null });
 });
 
 // §issue#29 — service images on DO Spaces. Helpers + 3 endpoints.
@@ -927,12 +955,30 @@ async function serviceForStore(serviceId, storeId) {
     [serviceId, storeId])).rows[0] || null;
 }
 
-// All images for a service, store-scoped, in stable display order.
+// All images for a service, store-scoped, in stable display order. Each row
+// carries is_menu (§issue#31) so every read (list/upload/delete/menu/detail)
+// exposes which image is the menu/cover.
 async function imagesForService(serviceId, storeId) {
   return (await q(
-    `SELECT id, service_id, url, sort_order FROM service_image
+    `SELECT id, service_id, url, sort_order, is_menu FROM service_image
       WHERE service_id=$1 AND store_id=$2 ORDER BY sort_order, id`,
     [serviceId, storeId])).rows;
+}
+
+// §issue#31 — set a single image as the service's menu image, store-scoped,
+// enforcing the ≤1-menu-per-service invariant: first unset any existing menu in
+// this service+store, then set the target. Caller must have verified the image
+// belongs to the service+store. Returns false if the image row doesn't match.
+async function setMenuImage(serviceId, imageId, storeId) {
+  await q(
+    `UPDATE service_image SET is_menu = false
+      WHERE service_id=$1 AND store_id=$2 AND is_menu = true`,
+    [serviceId, storeId]);
+  const r = await q(
+    `UPDATE service_image SET is_menu = true
+      WHERE id=$1 AND service_id=$2 AND store_id=$3`,
+    [imageId, serviceId, storeId]);
+  return r.rowCount > 0;
 }
 
 // GET images for a service (store-scoped). Read-guard mirrors service detail.
@@ -980,6 +1026,21 @@ app.post('/api/services/:id/images', requireOwner,
         [req.user.storeId, req.params.id, url, nextOrder]);
       nextOrder += 1;
     }
+    // §issue#31 — if this service still has no menu image (e.g. its very first
+    // upload), promote the lowest-sort_order image so a service with images is
+    // never menu-less. Store-scoped; no-op when a menu already exists.
+    await q(
+      `UPDATE service_image SET is_menu = true
+        WHERE id = (
+          SELECT id FROM service_image
+           WHERE service_id=$1 AND store_id=$2
+           ORDER BY sort_order, id LIMIT 1
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM service_image
+           WHERE service_id=$1 AND store_id=$2 AND is_menu = true
+        )`,
+      [req.params.id, req.user.storeId]);
     await audit(req.user.id, req.user.storeId, 'service_images_add', 'service', req.params.id,
       { count: files.length });
     res.json({ images: await imagesForService(req.params.id, req.user.storeId) });
@@ -1012,12 +1073,51 @@ app.delete('/api/services/:id/images/:imageId', requireOwner, async (req, res) =
     }
     await q('DELETE FROM service_image WHERE id=$1 AND store_id=$2',
       [req.params.imageId, req.user.storeId]);
+    // §issue#31 — if we deleted the menu image and the service still has images,
+    // promote the lowest-sort_order remaining one so a service with images is
+    // never left menu-less. No-op if the deleted image wasn't the menu.
+    if (img.is_menu) {
+      await q(
+        `UPDATE service_image SET is_menu = true
+          WHERE id = (
+            SELECT id FROM service_image
+             WHERE service_id=$1 AND store_id=$2
+             ORDER BY sort_order, id LIMIT 1
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM service_image
+             WHERE service_id=$1 AND store_id=$2 AND is_menu = true
+          )`,
+        [req.params.id, req.user.storeId]);
+    }
     await audit(req.user.id, req.user.storeId, 'service_image_delete', 'service', req.params.id,
       { image_id: Number(req.params.imageId) });
     res.json({ images: await imagesForService(req.params.id, req.user.storeId) });
   } catch (e) {
     console.error('[service-images:delete]', e.message);
     res.status(500).json({ error: 'failed to delete image' });
+  }
+});
+
+// §issue#31 — set an image as the service's MENU (cover) image. Owner only,
+// store-scoped. Verifies the image belongs to service+store (else 404), unsets
+// any other menu in this service+store, then marks this one is_menu=true
+// (≤1-menu invariant via setMenuImage). Returns the full ordered image list.
+app.put('/api/services/:id/images/:imageId/menu', requireOwner, async (req, res) => {
+  try {
+    const svc = await serviceForStore(req.params.id, req.user.storeId);
+    if (!svc) return res.status(404).json({ error: 'service not found' });
+    const img = (await q(
+      'SELECT * FROM service_image WHERE id=$1 AND service_id=$2 AND store_id=$3',
+      [req.params.imageId, req.params.id, req.user.storeId])).rows[0];
+    if (!img) return res.status(404).json({ error: 'image not found' });
+    await setMenuImage(req.params.id, req.params.imageId, req.user.storeId);
+    await audit(req.user.id, req.user.storeId, 'service_image_set_menu', 'service', req.params.id,
+      { image_id: Number(req.params.imageId) });
+    res.json({ images: await imagesForService(req.params.id, req.user.storeId) });
+  } catch (e) {
+    console.error('[service-images:set-menu]', e.message);
+    res.status(500).json({ error: 'failed to set menu image' });
   }
 });
 

@@ -122,6 +122,9 @@ export const api = {
     return j(`/api/services/${id}/images`, { method: 'POST', body: fd })
   },
   deleteServiceImage: (id, imageId) => j(`/api/services/${id}/images/${imageId}`, { method: 'DELETE' }),
+  // ── menu/cover image (#31) ── set one image as the menu (cover); server unsets the others.
+  // returns { images: [...] } where exactly one has is_menu === true.
+  setMenuImage: (id, imageId) => j(`/api/services/${id}/images/${imageId}/menu`, { method: 'PUT' }),
   updateOption: (sid, oid, body) => j(`/api/services/${sid}/options/${oid}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteOption: (sid, oid) => j(`/api/services/${sid}/options/${oid}`, { method: 'DELETE' }),
 
