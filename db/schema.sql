@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS ticket (
   status       TEXT NOT NULL DEFAULT 'open'
                  CHECK (status IN ('open','in_progress','done','closed')),
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  closed_at    TIMESTAMPTZ
+  closed_at    TIMESTAMPTZ,
+  voided_at    TIMESTAMPTZ   -- §issue#37 soft-delete: NULL=active, set=voided
 );
 
 CREATE TABLE IF NOT EXISTS ticket_item (
