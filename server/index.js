@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import heicConvert from 'heic-convert';
 import { createBeamAdapter } from './adapters/beam.js';
 import { createBeamBoltAdapter } from './adapters/beamBolt.js';
 import { createLineAdapter } from './adapters/line.js';
@@ -60,15 +61,27 @@ const s3 = new S3Client({
   },
 });
 
-// multer: in-memory storage, 5MB/file, images only. Buffers go straight to S3.
-// Tight server-side mime allowlist (don't trust the client) — jpeg/png/webp only.
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-const ALLOWED_IMAGE_MIME = new Set(['image/jpeg', 'image/png', 'image/webp']);
+// multer: in-memory storage, 10MB/file, images only. Buffers go straight to S3.
+// Tight server-side mime allowlist (don't trust the client) — jpeg/png/webp +
+// HEIC/HEIF (iOS). HEIC/HEIF are converted to JPEG before upload (#46 Part 2).
+// 10MB cap: iOS HEIC originals routinely exceed the old 5MB limit.
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const ALLOWED_IMAGE_MIME = new Set([
+  'image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif',
+]);
+
+// iOS sometimes sends image/heic|heif, and sometimes an empty mimetype with a
+// .heic/.heif filename — treat either as HEIC so it gets converted to JPEG.
+function isHeic(file) {
+  const mt = file.mimetype || '';
+  return mt === 'image/heic' || mt === 'image/heif'
+    || /\.hei[cf]$/i.test(file.originalname || '');
+}
 const uploadImages = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_IMAGE_BYTES },
   fileFilter: (_req, file, cb) => {
-    if (ALLOWED_IMAGE_MIME.has(file.mimetype)) return cb(null, true);
+    if (ALLOWED_IMAGE_MIME.has(file.mimetype) || isHeic(file)) return cb(null, true);
     cb(null, false); // silently skip disallowed types (no hard crash)
   },
 });
@@ -974,11 +987,15 @@ app.get('/api/services', async (req, res) => {
          WHERE si.service_id = service.id AND si.store_id = $1 AND si.is_menu = true
          ORDER BY si.sort_order, si.id LIMIT 1
       ) mi ON true`;
+  // §issue#46 — image_count per service (store-scoped) so the FE gallery can
+  // surface which services actually have images. Correlated subquery per row.
+  const imgCount = `(SELECT COUNT(*)::int FROM service_image si2
+         WHERE si2.service_id = service.id AND si2.store_id = $1) AS image_count`;
   const services = (await q(
     all
-      ? `SELECT service.*, mi.url AS menu_image_url FROM service ${menuJoin}
+      ? `SELECT service.*, mi.url AS menu_image_url, ${imgCount} FROM service ${menuJoin}
           WHERE store_id=$1 ORDER BY category, name`
-      : `SELECT service.*, mi.url AS menu_image_url FROM service ${menuJoin}
+      : `SELECT service.*, mi.url AS menu_image_url, ${imgCount} FROM service ${menuJoin}
           WHERE store_id=$1 AND active ORDER BY category, name`,
     [req.user.storeId])).rows;
   if (services.length === 0) return res.json([]);
@@ -1066,9 +1083,9 @@ app.post('/api/services/:id/images', requireOwner,
   try {
     const svc = await serviceForStore(req.params.id, req.user.storeId);
     if (!svc) return res.status(404).json({ error: 'service not found' });
-    const files = (req.files || []).filter(f => ALLOWED_IMAGE_MIME.has(f.mimetype));
+    const files = (req.files || []).filter(f => ALLOWED_IMAGE_MIME.has(f.mimetype) || isHeic(f));
     if (files.length === 0)
-      return res.status(400).json({ error: 'no valid image files (field "images"; jpeg/png/webp only, ≤5MB each)' });
+      return res.status(400).json({ error: 'no valid image files (field "images"; jpeg/png/webp/heic only, ≤10MB each)' });
     if (!SPACES_BUCKET || !SPACES_PUBLIC_BASE)
       return res.status(500).json({ error: 'image storage not configured' });
 
@@ -1078,12 +1095,25 @@ app.post('/api/services/:id/images', requireOwner,
       [req.params.id, req.user.storeId])).rows[0].n;
 
     for (const file of files) {
-      const key = `services/${req.params.id}/${randomUUID()}.${imageExt(file)}`;
+      // #46 Part 2 — browsers can't render HEIC/HEIF; convert to JPEG so the
+      // stored object is a real .jpg. Non-HEIC files pass through untouched.
+      let body = file.buffer, ext = imageExt(file), contentType = file.mimetype;
+      if (isHeic(file)) {
+        try {
+          body = await heicConvert({ buffer: file.buffer, format: 'JPEG', quality: 0.9 });
+          ext = 'jpg';
+          contentType = 'image/jpeg';
+        } catch (e) {
+          console.error('[service-images:heic]', e.message);
+          return res.status(400).json({ error: 'แปลงรูป HEIC ไม่สำเร็จ — ลองรูป JPEG/PNG' });
+        }
+      }
+      const key = `services/${req.params.id}/${randomUUID()}.${ext}`;
       await s3.send(new PutObjectCommand({
         Bucket: SPACES_BUCKET,
         Key: key,
-        Body: file.buffer,
-        ContentType: file.mimetype,
+        Body: body,
+        ContentType: contentType,
         ACL: 'public-read',
       }));
       const url = `${SPACES_PUBLIC_BASE}/${key}`;
