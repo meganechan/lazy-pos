@@ -136,7 +136,21 @@ export const api = {
   member: (id) => j(`/api/members/${id}`),
   addMember: (body) => j('/api/members', { method: 'POST', body: JSON.stringify(body) }),
   updateMember: (id, body) => j(`/api/members/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
-  tickets: (all) => j('/api/tickets' + (all ? '?all=1' : '')),
+  // tickets() = bare call (pending, no date) → used by the Dashboard (DO NOT change).
+  // tickets({status, from, to}) = filtered bills tab (#43). Empty fields are omitted.
+  // Server clamps staff to TODAY on any filtered call regardless of what we send.
+  tickets: (opts) => {
+    let qs = ''
+    if (opts && typeof opts === 'object') {
+      const sp = new URLSearchParams()
+      ;['status', 'from', 'to'].forEach((k) => {
+        if (opts[k] !== undefined && opts[k] !== null && opts[k] !== '') sp.set(k, opts[k])
+      })
+      const s = sp.toString()
+      if (s) qs = '?' + s
+    }
+    return j('/api/tickets' + qs)
+  },
   ticket: (id) => j(`/api/tickets/${id}`),
   newTicket: (body) => j('/api/tickets', { method: 'POST', body: JSON.stringify(body) }),
   addItem: (id, body) => j(`/api/tickets/${id}/items`, { method: 'POST', body: JSON.stringify(body) }),

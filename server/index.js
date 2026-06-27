@@ -1436,17 +1436,39 @@ app.get('/api/members/:id', async (req, res) => {
 });
 
 app.get('/api/tickets', async (req, res) => {
-  // §v0.8 — store-scoped list. §v1.4 — staff see only their own bills
-  // (assigned to them OR opened by them); owner sees the whole store.
-  // §fix(#34 regression) — DEFAULT lists only OPEN bills (this endpoint also feeds
-  // the Dashboard "บิลที่เปิดอยู่" list + the ticket picker). ?all=1 ADDS 'closed'
-  // for the "บิลทั้งหมด" history view, so auto-closed paid bills don't vanish there;
-  // closed bills sort to the bottom. Dashboard keeps the default (open-only).
-  const all = req.query.all === '1' || req.query.all === 'true';
-  const statuses = all
-    ? "('open','in_progress','done','closed')"
+  // §v0.8 store-scoped · §v1.4 staff see only their own bills (assigned/created_by).
+  // §issue#43 — filter: ?status=pending|closed|all (default pending) + ?from&?to (date
+  //   range on created_at). The BARE default call (no params) = pending, no date — this
+  //   still feeds the Dashboard "บิลที่เปิดอยู่" list + picker, so Dashboard is unaffected.
+  // §issue#43 RBAC (server-enforced, never trust client): a STAFF making any FILTERED
+  //   request is HARD-clamped to TODAY (from/to ignored). The bare default call is left
+  //   un-clamped so staff still see their active open bills on the Dashboard.
+  const staff = req.user.role !== 'owner';
+  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+  const status = req.query.status === 'closed' ? 'closed'
+    : req.query.status === 'all' ? 'all'
+    : (req.query.all === '1' || req.query.all === 'true') ? 'all' // back-compat (#36)
+    : 'pending';
+  const statuses = status === 'closed' ? "('closed')"
+    : status === 'all' ? "('open','in_progress','done','closed')"
     : "('open','in_progress','done')";
-  const staffScope = req.user.role !== 'owner';
+  let from = dateRe.test(req.query.from || '') ? req.query.from : null;
+  let to = dateRe.test(req.query.to || '') ? req.query.to : null;
+  const hasFilter = !!(req.query.status || req.query.from || req.query.to || req.query.all);
+  let todayOnly = false;
+  if (staff && hasFilter) { todayOnly = true; from = null; to = null; } // clamp staff → today
+
+  const params = [req.user.storeId];
+  let dateSql = '';
+  if (todayOnly) {
+    dateSql = "AND t.created_at::date = now()::date";
+  } else {
+    if (from) { params.push(from); dateSql += ` AND t.created_at >= $${params.length}::date`; }
+    if (to) { params.push(to); dateSql += ` AND t.created_at < ($${params.length}::date + INTERVAL '1 day')`; }
+  }
+  let staffSql = '';
+  if (staff) { params.push(req.user.id); staffSql = ` AND (t.assigned_user_id=$${params.length} OR t.created_by=$${params.length})`; }
+
   const rows = (await q(
     `SELECT t.*, m.name AS member_name,
             COALESCE(SUM(ti.quoted_price*ti.qty),0)::float AS total
@@ -1454,9 +1476,9 @@ app.get('/api/tickets', async (req, res) => {
        LEFT JOIN member m ON m.id = t.member_id
        LEFT JOIN ticket_item ti ON ti.ticket_id = t.id
       WHERE t.status IN ${statuses} AND t.store_id=$1 AND t.voided_at IS NULL
-        ${staffScope ? 'AND (t.assigned_user_id=$2 OR t.created_by=$2)' : ''}
+        ${dateSql}${staffSql}
       GROUP BY t.id, m.name ORDER BY (t.status='closed') ASC, t.created_at DESC`,
-    staffScope ? [req.user.storeId, req.user.id] : [req.user.storeId])).rows;
+    params)).rows;
   res.json(rows);
 });
 
