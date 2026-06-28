@@ -361,7 +361,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 .app.wide .fab:active { transform: translateY(1px); }
 
 /* topbar user chip + logout */
-.userchip { display: flex; align-items: center; gap: 8px; }
+.userchip { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .userchip .who { text-align: right; line-height: 1.15; }
 .userchip .uname { font-size: 13px; font-weight: 700; color: #fff; }
 .userchip .urole { font-size: 11px; opacity: .85; }

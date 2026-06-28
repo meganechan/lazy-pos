@@ -60,6 +60,7 @@ function Logo({ className = '' }) {
 }
 
 const roleTH = { owner: 'เจ้าของร้าน', staff: 'พนักงาน' }
+const roleEN = { owner: 'Owner', staff: 'Staff' }
 
 /* viewport hook: exposes isLarge (≥768px). matchMedia with cleanup. */
 function useViewport() {
@@ -319,7 +320,7 @@ export default function App() {
         <div className="userchip">
           <div className="who">
             <div className="uname">{user.name}</div>
-            <div className="urole">{roleTH[role] || role}</div>
+            <div className="urole">{roleEN[role] || role}</div>
           </div>
           <button className="logout" onClick={doLogout} title="ออกจากระบบ" aria-label="ออกจากระบบ"><Icon name="log-out" size={18} /></button>
         </div>
