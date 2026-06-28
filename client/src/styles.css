@@ -102,7 +102,7 @@ h1, h2 { text-wrap: balance; }
   position: sticky; top: 0; z-index: 20;
   background: var(--primary);
   color: #fff;
-  padding: 14px 18px calc(14px + env(safe-area-inset-top));
+  padding: calc(14px + env(safe-area-inset-top)) 18px 14px;
   display: flex; align-items: center; gap: 10px;
 }
 .topbar .logo { font-size: 22px; }
