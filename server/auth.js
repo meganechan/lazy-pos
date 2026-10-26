@@ -37,36 +37,52 @@ export function verifyPin(pin, stored) {
 
 // ---- Login throttle (PIN brute-force guard) ----
 //
-// Keyed by userId, not IP: behind Coolify's proxy every request shares one
-// req.ip, so a per-IP limit would throttle the whole salon. After
-// LOGIN_MAX_FAILS failed PINs inside LOGIN_WINDOW_MS that user gets 429 until
-// the window rolls over. Short window on purpose — user ids are public
-// (/api/auth/users), so a long lockout would let anyone lock staff out.
-// ponytail: in-memory Map, single instance only; move to app_session-style
-// table if the app ever runs >1 replica.
-export const LOGIN_MAX_FAILS = 5;
+// Keyed by canonical integer userId, not IP: behind Coolify's proxy every
+// request shares one req.ip, so a per-IP limit would throttle the whole salon.
+// Each login RESERVES an attempt synchronously before any await, so concurrent
+// requests cannot all slip past the check; a successful login (or an id with
+// no user) releases it. LOGIN_MAX_ATTEMPTS unreleased attempts inside
+// LOGIN_WINDOW_MS → 429 until the window rolls over. Short window on purpose —
+// user ids are public (/api/auth/users), so a long lockout would let anyone
+// lock staff out.
+// ponytail: in-memory Map, single process only; move to a DB table if the app
+// ever runs >1 replica.
+export const LOGIN_MAX_ATTEMPTS = 5;
 export const LOGIN_WINDOW_MS = 5 * 60 * 1000;
-const loginFails = new Map(); // userId -> { count, since }
+const SWEEP_AT = 1000;
+const loginAttempts = new Map(); // userId(int) -> { count, since }
 
-export function loginBlocked(userId, now = Date.now()) {
-  const e = loginFails.get(String(userId));
-  if (!e) return false;
-  if (now - e.since >= LOGIN_WINDOW_MS) {
-    loginFails.delete(String(userId));
-    return false;
+// Public JSON userId → positive safe integer, or null. "01", " 1", "+1" all
+// become 1 so aliases share one counter (Postgres casts them to the same id).
+export function canonicalUserId(raw) {
+  if (raw == null || raw === '' || typeof raw === 'boolean') return null;
+  const id = Number(raw);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
+// Reserve one attempt for `id`. Returns false (→ 429) when the cap is reached.
+export function takeLoginAttempt(id, now = Date.now()) {
+  if (loginAttempts.size >= SWEEP_AT) {
+    for (const [k, e] of loginAttempts) {
+      if (now - e.since >= LOGIN_WINDOW_MS) loginAttempts.delete(k);
+    }
   }
-  return e.count >= LOGIN_MAX_FAILS;
+  const e = loginAttempts.get(id);
+  if (!e || now - e.since >= LOGIN_WINDOW_MS) {
+    loginAttempts.set(id, { count: 1, since: now });
+    return true;
+  }
+  if (e.count >= LOGIN_MAX_ATTEMPTS) return false;
+  e.count++;
+  return true;
 }
 
-export function recordLoginFail(userId, now = Date.now()) {
-  const key = String(userId);
-  const e = loginFails.get(key);
-  if (!e || now - e.since >= LOGIN_WINDOW_MS) loginFails.set(key, { count: 1, since: now });
-  else e.count++;
+export function clearLoginAttempts(id) {
+  loginAttempts.delete(id);
 }
 
-export function clearLoginFails(userId) {
-  loginFails.delete(String(userId));
+export function loginAttemptsSize() {
+  return loginAttempts.size;
 }
 
 // ---- DB-backed session store (durable across restart / deploy) ----

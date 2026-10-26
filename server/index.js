@@ -20,9 +20,9 @@ import {
   createSession,
   getSession,
   destroySession,
-  loginBlocked,
-  recordLoginFail,
-  clearLoginFails,
+  canonicalUserId,
+  takeLoginAttempt,
+  clearLoginAttempts,
 } from './auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -516,17 +516,21 @@ app.get('/api/auth/users', async (req, res) => {
 // store_id and the response user includes store_id.
 app.post('/api/auth/login', async (req, res) => {
   const { userId, pin } = req.body || {};
-  if (userId == null || pin == null)
+  const id = canonicalUserId(userId);
+  if (id == null || pin == null)
     return res.status(401).json({ error: 'invalid_credentials' });
-  if (loginBlocked(userId))
+  // Reserve before the await — see takeLoginAttempt in auth.js.
+  if (!takeLoginAttempt(id))
     return res.status(429).json({ error: 'too_many_attempts' });
   const user = (await q(
-    'SELECT * FROM app_user WHERE id=$1 AND active', [userId])).rows[0];
-  if (!user || !verifyPin(pin, user.pin_hash)) {
-    recordLoginFail(userId);
+    'SELECT * FROM app_user WHERE id=$1 AND active', [id])).rows[0];
+  if (!user) {
+    clearLoginAttempts(id); // no account to guess at; don't keep the entry
     return res.status(401).json({ error: 'invalid_credentials' });
   }
-  clearLoginFails(userId);
+  if (!verifyPin(pin, user.pin_hash))
+    return res.status(401).json({ error: 'invalid_credentials' });
+  clearLoginAttempts(id);
   const token = await createSession(q, user);
   await audit(user.id, user.store_id, 'login', 'app_user', user.id, null);
   res.json({

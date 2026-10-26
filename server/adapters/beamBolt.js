@@ -231,21 +231,27 @@ export function createBeamBoltAdapter(env = {}) {
     // verifyWebhookSignature(rawBodyBuffer, signatureHeader)
     //   -> { verified, skipped? }
     //
-    // No BEAM_WEBHOOK_SECRET in MOCK mode (PoC) -> { verified:false, skipped:true }
-    // so the caller can choose to proceed with a warning. With real Beam creds
-    // a missing secret fails closed -> { verified:false }: an unsigned webhook
-    // must never be able to mark a real payment paid.
+    // No BEAM_WEBHOOK_SECRET and NO Bolt creds at all (pure PoC) ->
+    // { verified:false, skipped:true } so the caller can proceed with a warning.
+    // Any Bolt cred present (even one, e.g. half-lost config) fails closed ->
+    // { verified:false }: an unsigned webhook must never mark a real payment paid.
     //
     // Otherwise: base64( HMAC-SHA256(rawBody, base64decode(secret)) ), compared
     // timing-safe against the signature header. -> { verified }.
     verifyWebhookSignature(rawBodyBuffer, signatureHeader) {
       if (!webhookSecret) {
-        return mock ? { verified: false, skipped: true } : { verified: false };
+        return !merchantId && !apiKey
+          ? { verified: false, skipped: true }
+          : { verified: false };
       }
-      if (!signatureHeader) {
+      if (!signatureHeader || !Buffer.isBuffer(rawBodyBuffer)) {
         return { verified: false };
       }
       const key = Buffer.from(webhookSecret, 'base64');
+      // Malformed base64 decodes to an empty key, which anyone can HMAC with.
+      if (key.length === 0) {
+        return { verified: false };
+      }
       const computed = crypto
         .createHmac('sha256', key)
         .update(rawBodyBuffer)
