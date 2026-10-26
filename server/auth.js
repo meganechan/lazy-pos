@@ -57,7 +57,8 @@ const loginAttempts = new Map(); // userId(int) -> { count, since }
 export function canonicalUserId(raw) {
   if (raw == null || raw === '' || typeof raw === 'boolean') return null;
   const id = Number(raw);
-  return Number.isSafeInteger(id) && id > 0 ? id : null;
+  // app_user.id is int4 — larger values make the pg query throw.
+  return Number.isInteger(id) && id > 0 && id <= 2147483647 ? id : null;
 }
 
 // Reserve one attempt for `id`. Returns false (→ 429) when the cap is reached.

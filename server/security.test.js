@@ -18,7 +18,7 @@ test('PIN hash round-trip', () => {
 
 test('userId aliases collapse to one canonical id', () => {
   for (const raw of [1, '1', '01', '001', '+1', ' 1', '1 ']) assert.equal(canonicalUserId(raw), 1);
-  for (const raw of [null, undefined, '', '0', '-1', '1.5', 'abc', true, {}]) assert.equal(canonicalUserId(raw), null);
+  for (const raw of [null, undefined, '', '0', '-1', '1.5', 'abc', true, {}, '2147483648', 1e20]) assert.equal(canonicalUserId(raw), null);
 });
 
 test('login throttle: reserved attempts cap concurrent bursts; window + clear reset', () => {
