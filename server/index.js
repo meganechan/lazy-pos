@@ -20,6 +20,9 @@ import {
   createSession,
   getSession,
   destroySession,
+  loginBlocked,
+  recordLoginFail,
+  clearLoginFails,
 } from './auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -515,10 +518,15 @@ app.post('/api/auth/login', async (req, res) => {
   const { userId, pin } = req.body || {};
   if (userId == null || pin == null)
     return res.status(401).json({ error: 'invalid_credentials' });
+  if (loginBlocked(userId))
+    return res.status(429).json({ error: 'too_many_attempts' });
   const user = (await q(
     'SELECT * FROM app_user WHERE id=$1 AND active', [userId])).rows[0];
-  if (!user || !verifyPin(pin, user.pin_hash))
+  if (!user || !verifyPin(pin, user.pin_hash)) {
+    recordLoginFail(userId);
     return res.status(401).json({ error: 'invalid_credentials' });
+  }
+  clearLoginFails(userId);
   const token = await createSession(q, user);
   await audit(user.id, user.store_id, 'login', 'app_user', user.id, null);
   res.json({

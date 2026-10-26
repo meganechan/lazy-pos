@@ -231,14 +231,16 @@ export function createBeamBoltAdapter(env = {}) {
     // verifyWebhookSignature(rawBodyBuffer, signatureHeader)
     //   -> { verified, skipped? }
     //
-    // No BEAM_WEBHOOK_SECRET configured (PoC) -> { verified:false, skipped:true }
-    // so the caller can choose to proceed with a warning.
+    // No BEAM_WEBHOOK_SECRET in MOCK mode (PoC) -> { verified:false, skipped:true }
+    // so the caller can choose to proceed with a warning. With real Beam creds
+    // a missing secret fails closed -> { verified:false }: an unsigned webhook
+    // must never be able to mark a real payment paid.
     //
     // Otherwise: base64( HMAC-SHA256(rawBody, base64decode(secret)) ), compared
     // timing-safe against the signature header. -> { verified }.
     verifyWebhookSignature(rawBodyBuffer, signatureHeader) {
       if (!webhookSecret) {
-        return { verified: false, skipped: true };
+        return mock ? { verified: false, skipped: true } : { verified: false };
       }
       if (!signatureHeader) {
         return { verified: false };

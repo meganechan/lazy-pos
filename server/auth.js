@@ -35,6 +35,40 @@ export function verifyPin(pin, stored) {
   return timingSafeEqual(actual, expected);
 }
 
+// ---- Login throttle (PIN brute-force guard) ----
+//
+// Keyed by userId, not IP: behind Coolify's proxy every request shares one
+// req.ip, so a per-IP limit would throttle the whole salon. After
+// LOGIN_MAX_FAILS failed PINs inside LOGIN_WINDOW_MS that user gets 429 until
+// the window rolls over. Short window on purpose — user ids are public
+// (/api/auth/users), so a long lockout would let anyone lock staff out.
+// ponytail: in-memory Map, single instance only; move to app_session-style
+// table if the app ever runs >1 replica.
+export const LOGIN_MAX_FAILS = 5;
+export const LOGIN_WINDOW_MS = 5 * 60 * 1000;
+const loginFails = new Map(); // userId -> { count, since }
+
+export function loginBlocked(userId, now = Date.now()) {
+  const e = loginFails.get(String(userId));
+  if (!e) return false;
+  if (now - e.since >= LOGIN_WINDOW_MS) {
+    loginFails.delete(String(userId));
+    return false;
+  }
+  return e.count >= LOGIN_MAX_FAILS;
+}
+
+export function recordLoginFail(userId, now = Date.now()) {
+  const key = String(userId);
+  const e = loginFails.get(key);
+  if (!e || now - e.since >= LOGIN_WINDOW_MS) loginFails.set(key, { count: 1, since: now });
+  else e.count++;
+}
+
+export function clearLoginFails(userId) {
+  loginFails.delete(String(userId));
+}
+
 // ---- DB-backed session store (durable across restart / deploy) ----
 //
 // Sessions live in the app_session table so a deploy no longer logs everyone
