@@ -1939,6 +1939,11 @@ app.post('/api/tickets/:id/payments', async (req, res) => {
     'SELECT COALESCE(MAX(payment_seq),0)+1 AS n FROM payment WHERE ticket_id=$1',
     [req.params.id])).rows[0].n;
 
+  // beam.js is a legacy always-success mock; with real Bolt creds an EDC
+  // charge must go through /bolt-intent, never here.
+  if (method === 'beam_edc' && !beamBoltAdapter.mock)
+    return res.status(400).json({ error: 'use_bolt_intent' });
+
   if (method === 'beam_edc') {
     // INVARIANT 1: persist idempotency key (durable) BEFORE calling Beam
     const key = randomUUID();
@@ -1987,6 +1992,12 @@ app.post('/api/tickets/:id/payments/:pid/retry', async (req, res) => {
     return res.status(400).json({ error: 'not a beam_edc payment' });
   if (!['pending', 'failed'].includes(p.status))
     return res.status(409).json({ error: 'payment not retryable', status: p.status });
+  // Bolt row → re-check its real status with Beam (same as the poll route).
+  if (/^(bolti_|mock_bi_)/.test(p.beam_charge_id || ''))
+    return res.json((await syncBoltPayment(p, req, simulate)).ticket);
+  // Legacy beam.js mock may only "charge" in demo/mock mode.
+  if (!beamBoltAdapter.mock)
+    return res.status(400).json({ error: 'use_bolt_intent' });
   if (!p.beam_idempotency_key)
     return res.status(409).json({ error: 'no idempotency key on payment' });
 
@@ -2112,12 +2123,16 @@ app.get('/api/tickets/:id/bolt-intent/:pid', requireAuth, async (req, res) => {
       WHERE p.id=$1 AND p.ticket_id=$2 AND t.store_id=$3`,
     [req.params.pid, req.params.id, req.user.storeId])).rows[0];
   if (!p) return res.status(404).json({ error: 'payment not found' });
+  res.json(await syncBoltPayment(p, req, req.query.simulate));
+});
 
+// Ask Beam for a Bolt payment's real outcome and persist it. Shared by the
+// poll route above and by /retry on Bolt rows (which must never fall into the
+// legacy always-success beam.js mock).
+async function syncBoltPayment(p, req, simulate) {
   // boltIntentId was stored in beam_charge_id at creation time (PoC reuse).
   const boltIntentId = p.beam_charge_id;
-  const { result } = await beamBoltAdapter.getBoltIntent(boltIntentId, {
-    simulate: req.query.simulate,
-  });
+  const { result } = await beamBoltAdapter.getBoltIntent(boltIntentId, { simulate });
 
   const FAILURES = [
     'CH_PROCESSING_FAILED', 'CH_INSUFFICIENT_FUNDS', 'CH_AUTHENTICATION_FAILED',
@@ -2138,12 +2153,12 @@ app.get('/api/tickets/:id/bolt-intent/:pid', requireAuth, async (req, res) => {
   // §issue#31 Part 4 — bolt success (poll) fully paid → auto-close.
   if (status === 'success') await maybeCloseOnFullPayment(req.params.id, req.user.storeId, req.user.id);
 
-  res.json({
+  return {
     result,
     status,
     ticket: await ticketDetail(req.params.id, req.user.storeId),
-  });
-});
+  };
+}
 
 // Cancel an in-flight Bolt Intent for a ticket's payment. The cashier hit
 // "ยกเลิก" on the POS — propagate the cancel to Beam so the paired EDC terminal

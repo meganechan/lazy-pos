@@ -1897,7 +1897,13 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
     setBusy(true)
     setReconcile(null)
     api.retryEdc(id, p.id, simulate)
-      .then((d) => { setT(d); setBusy(false); flash('รูดบัตรใหม่สำเร็จ') })
+      .then((d) => {
+        setT(d); setBusy(false)
+        const now = (d.payments || []).find((x) => x.id === p.id)
+        flash(now && now.status === 'success' ? 'ชำระสำเร็จ'
+          : now && now.status === 'failed' ? 'ยังไม่สำเร็จ — เปิดรายการรูดบัตรใหม่'
+          : 'ยังรอผลจากเครื่องรูดบัตร')
+      })
       .catch((e) => {
         setBusy(false)
         if (e.status === 409 && e.body && e.body.error === 'idempotency_key_expired') {
@@ -2822,6 +2828,8 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
                 const st = p.status || 'pending'
                 const isVoided = st === 'voided'
                 const canRetry = p.method === 'beam_edc' && (st === 'pending' || st === 'failed')
+                // Bolt rows can't be re-charged here — the server re-checks their real status with Beam.
+                const isBolt = /^(bolti_|mock_bi_)/.test(p.beam_charge_id || '')
                 return (
                   <div key={p.id}>
                     <div className="li">
@@ -2839,7 +2847,7 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
                     {!readOnly && !isVoided && (canRetry || canManage) && (
                       <div className="btn-row" style={{ marginTop: 6 }}>
                         {canRetry && (
-                          <button className="btn secondary" style={{ width: 'auto', padding: '8px 14px' }} disabled={busy} onClick={() => retryPay(p)}><Icon name="rotate-ccw" size={20} /> ลองรูดอีกครั้ง</button>
+                          <button className="btn secondary" style={{ width: 'auto', padding: '8px 14px' }} disabled={busy} onClick={() => retryPay(p)}><Icon name="rotate-ccw" size={20} /> {isBolt ? 'เช็คสถานะ' : 'ลองรูดอีกครั้ง'}</button>
                         )}
                         {canManage && (
                           <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} disabled={busy} onClick={() => voidPay(p)}>ยกเลิก</button>
