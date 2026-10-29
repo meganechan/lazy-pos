@@ -1,22 +1,12 @@
-// Run only against a disposable database; server/providers use an isolated env.
-// E2E_DATABASE_URL=... node server/e2e/tenancy-auth.mjs
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
-import net from 'node:net';
 import assert from 'node:assert/strict';
-import pg from 'pg';
-const dbURL = process.env.E2E_DATABASE_URL;
-assert.ok(dbURL, 'E2E_DATABASE_URL must point to throwaway PostgreSQL');
-const socket = net.createServer().listen(0, '127.0.0.1');
-await once(socket, 'listening'); const port = socket.address().port; await new Promise(r => socket.close(r));
-const srv = spawn(process.execPath, ['index.js'], { cwd: process.env.E2E_SERVER_DIR || new URL('..', import.meta.url), env: { PATH: process.env.PATH, PORT: String(port), DATABASE_URL: dbURL }, stdio: ['ignore','pipe','pipe'] });
-let logs = ''; srv.stdout.on('data', d => logs += d); srv.stderr.on('data', d => logs += d);
-const db = new pg.Pool({connectionString: dbURL});
+import { startServer } from './harness.mjs';
+const h = await startServer();
+const db = h.db;
+const port = new URL(h.base).port;
 const q = (s,p) => db.query(s,p); let failures = 0;
 const check = async (name, fn) => { try { await fn(); console.log('PASS',name); } catch(e) { failures++; console.error('FAIL',name,e.message); } };
 const call = (path, token, body, method = 'POST') => fetch(`http://127.0.0.1:${port}/api${path}`, { method, signal: AbortSignal.timeout(5000), headers: {'content-type':'application/json', authorization:`Bearer ${token}`}, ...(body === undefined ? {} : {body:JSON.stringify(body)}) });
 try {
-  for(let i=0;i<100;i++){try{if((await call('/health','',undefined,'GET')).ok)break;}catch{} await new Promise(r=>setTimeout(r,100));}
   const users = (await q('SELECT * FROM app_user WHERE store_id=1 ORDER BY id')).rows;
   const owner = users.find(u=>u.role==='owner'), staff = users.find(u=>u.role==='staff');
   const login = async (u,pin) => (await (await call('/auth/login','',{userId:u.id,pin})).json()).token;
@@ -43,4 +33,4 @@ try {
   await check('role changes apply immediately',async()=>{await q("UPDATE app_user SET role='staff' WHERE id=$1",[owner.id]);assert.equal((await call('/users',ot,undefined,'GET')).status,403);});
   await check('store changes apply immediately',async()=>{await q('UPDATE app_user SET store_id=$1 WHERE id=$2',[other,owner.id]);const members=await(await call('/members',ot,undefined,'GET')).json();assert.deepEqual(members.map(m=>m.id),[member]);});
   await check('inactive user rejected and session deleted',async()=>{await q('UPDATE app_user SET active=false WHERE id=$1',[owner.id]);assert.equal((await call('/members',ot,undefined,'GET')).status,401);assert.equal((await q('SELECT 1 FROM app_session WHERE token=$1',[ot])).rowCount,0);});
-} finally { if(srv.exitCode===null) {srv.kill(); await once(srv,'exit');} await db.end(); if(failures) { console.error(logs); process.exitCode=1; } }
+} finally { await h.close(); if(failures) { console.error(h.log()); process.exitCode=1; } }
