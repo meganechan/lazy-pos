@@ -1,5 +1,5 @@
 # ---- stage 1: build React client ----
-FROM node:20-alpine AS client
+FROM node:22-alpine AS client
 WORKDIR /app/client
 COPY client/package.json ./
 RUN npm install
@@ -7,7 +7,7 @@ COPY client/ ./
 RUN npm run build
 
 # ---- stage 2: server + built client ----
-FROM node:20-alpine
+FROM node:22-alpine
 WORKDIR /app
 COPY server/package.json ./server/
 RUN cd server && npm install --omit=dev
