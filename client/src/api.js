@@ -72,6 +72,14 @@ const j = async (url, opts = {}) => {
   return r.json()
 }
 
+// Currency arithmetic (e.g. total - paid) can leave binary float noise.
+// Serialize numeric payment amounts in cents; server validation stays strict.
+const paymentBody = (body = {}) => JSON.stringify({
+  ...body,
+  ...(typeof body?.amount === 'number' && Number.isFinite(body.amount)
+    ? { amount: Math.round(body.amount * 100) / 100 } : {}),
+})
+
 export const api = {
   /* ── auth ── */
   // public shop picker
@@ -180,7 +188,7 @@ export const api = {
   startTicket: (id, assigned_user_id) => j(`/api/tickets/${id}/start`, { method: 'POST', body: JSON.stringify(assigned_user_id != null ? { assigned_user_id } : {}) }),
   sendQuote: (id) => j(`/api/tickets/${id}/quote/send`, { method: 'POST' }),
   confirmQuote: (id) => j(`/api/tickets/${id}/quote/confirm`, { method: 'POST' }),
-  pay: (id, body) => j(`/api/tickets/${id}/payments`, { method: 'POST', body: JSON.stringify(body) }),
+  pay: (id, body) => j(`/api/tickets/${id}/payments`, { method: 'POST', body: paymentBody(body) }),
   voidPayment: (ticketId, pid) => j(`/api/tickets/${ticketId}/payments/${pid}/void`, { method: 'POST' }),
   retryEdc: (ticketId, pid, simulate) => j(`/api/tickets/${ticketId}/payments/${pid}/retry`, { method: 'POST', body: JSON.stringify(simulate ? { simulate } : {}) }),
 
@@ -195,7 +203,7 @@ export const api = {
      body carries { mode, amount }: mode = PAIRING (รูดบัตรที่เครื่อง EDC) or
      DEEP_LINK (QR PromptPay). Server defaults to PAIRING when the shop is paired
      else DEEP_LINK. pollBoltIntent appends ?simulate= only when supplied (mock demo). */
-  createBoltIntent: (ticketId, body) => j(`/api/tickets/${ticketId}/bolt-intent`, { method: 'POST', body: JSON.stringify(body || {}) }),
+  createBoltIntent: (ticketId, body) => j(`/api/tickets/${ticketId}/bolt-intent`, { method: 'POST', body: paymentBody(body) }),
   pollBoltIntent: (ticketId, pid, simulate) => j(`/api/tickets/${ticketId}/bolt-intent/${pid}` + (simulate ? '?simulate=' + encodeURIComponent(simulate) : '')),
   // cancelBoltIntent: cashier hit "ยกเลิก" → tell Beam to cancel so the EDC stops
   // waiting, and void the pending row. Returns { ok, beamError, ticket }.

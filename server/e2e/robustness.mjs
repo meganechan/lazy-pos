@@ -5,6 +5,7 @@ import { once } from 'node:events';
 import net from 'node:net';
 import assert from 'node:assert/strict';
 import pg from 'pg';
+import { api } from '../../client/src/api.js';
 const dbURL = process.env.E2E_DATABASE_URL;
 assert.ok(dbURL, 'E2E_DATABASE_URL must point to throwaway PostgreSQL');
 const socket = net.createServer().listen(0, '127.0.0.1');
@@ -20,10 +21,35 @@ try {
   const owner=(await q("SELECT id FROM app_user WHERE role='owner' LIMIT 1")).rows[0];
   const token=(await(await call('/auth/login','',{userId:owner.id,pin:'1234'})).json()).token;
   const scenario=process.argv[2] || 'all';
+  if (scenario==='partial' || scenario==='all') {
+    await check('real client sends partial decimal balance as 1.05 and server persists 1.05', async () => {
+      const ticket = await (await call('/tickets',token,{})).json();
+      await call(`/tickets/${ticket.id}/custom-item`,token,{name:'decimal service',quoted_price:1.15});
+      const partial = await (await call(`/tickets/${ticket.id}/payments`,token,{method:'cash',amount:0.10})).json();
+      assert.equal(Number(partial.total),1.15);
+      assert.equal(Number(partial.paid),0.10);
+      const outstanding = Math.max(0, Number(partial.total) - Number(partial.paid)) || Number(partial.total);
+      const originalFetch = globalThis.fetch;
+      let sent;
+      // Browser-relative URLs and its bearer token, with real client serialization.
+      globalThis.fetch = (url, options) => {
+        sent = JSON.parse(options.body);
+        return originalFetch(new URL(url, `http://127.0.0.1:${port}`), {
+          ...options, headers: {...options.headers, Authorization:`Bearer ${token}`},
+        });
+      };
+      try {
+        const intent = await api.createBoltIntent(ticket.id,{amount:outstanding});
+        assert.equal(sent.amount,1.05);
+        const payment = (await q('SELECT amount FROM payment WHERE id=$1',[intent.payment_id])).rows[0];
+        assert.equal(Number(payment.amount),1.05);
+      } finally { globalThis.fetch = originalFetch; }
+    });
+  }
   if (scenario==='amount' || scenario==='all') {
     const t=await(await call('/tickets',token,{})).json();
     for(const path of ['payments','bolt-intent']) {
-      for(const amount of [-10,0,'NaN','10',null,true,1.001,0.001]) {
+      for(const amount of [-10,0,'NaN','10',null,true,1.001,0.001,1.0000001]) {
         await check(`${path} rejects ${JSON.stringify(amount)}`,async()=>{
           const before=(await q('SELECT count(*) FROM payment')).rows;
           assert.equal((await call(`/tickets/${t.id}/${path}`,token,{method:'cash',amount})).status,400);

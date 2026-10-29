@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { validAmount, validDate } from './validation.js';
 test('amounts are finite positive numbers with at most two decimal places', () => {
-  for(const n of [NaN,Infinity,-Infinity,-10,0,'10','NaN',null,undefined,true,1.001,0.001]) assert.equal(validAmount(n),false,String(n));
+  for(const n of [NaN,Infinity,-Infinity,-10,0,'10','NaN',null,undefined,true,1.001,0.001,1.0000001]) assert.equal(validAmount(n),false,String(n));
   for(const n of [0.01,0.29,1.1,10,123.45]) assert.equal(validAmount(n),true,String(n));
 });
 test('dates must exist in the calendar', () => {
