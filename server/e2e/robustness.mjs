@@ -51,7 +51,14 @@ try {
         const r=await fetch(`http://127.0.0.1:${port}/api/tickets/${t.id}/${path}`,{method:'POST',headers:{'content-type':'application/json',authorization:`Bearer ${token}`},body:'{"method":"cash","amount":1e999}'});
         assert.equal(r.status,400);
       });
-      for(const amount of [0.29,10,10.01]) await check(`${path} accepts ${amount}`,async()=>assert.equal((await call(`/tickets/${t.id}/${path}`,token,{method:'cash',amount})).status,200));
+      for(const amount of [0.29,10,10.01]) await check(`${path} accepts ${amount}`,async()=>{
+        const response=await call(`/tickets/${t.id}/${path}`,token,{method:'cash',amount});
+        assert.equal(response.status,200);
+        if(path==='bolt-intent') {
+          const intent=await response.json();
+          assert.equal((await call(`/tickets/${t.id}/bolt-intent/${intent.payment_id}/cancel`,token,{})).status,200);
+        }
+      });
     }
   }
   if(scenario==='date' || scenario==='all') {
