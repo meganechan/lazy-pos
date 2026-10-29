@@ -281,10 +281,14 @@ async function getEffectiveSettings(storeId, userId) {
 // Reuses verifyPin from ./auth.js (hashing untouched). Empty pin → false.
 async function verifyOwnerPin(storeId, pin) {
   if (!pin) return false;
+  const key = `override:${storeId}`;
+  if (!takeLoginAttempt(key)) return false; // reserve before the DB await
   const owners = (await q(
     "SELECT pin_hash FROM app_user WHERE store_id=$1 AND role='owner' AND active",
     [storeId])).rows;
-  return owners.some((o) => verifyPin(pin, o.pin_hash));
+  const valid = owners.some((o) => verifyPin(pin, o.pin_hash));
+  if (valid) clearLoginAttempts(key);
+  return valid;
 }
 
 // §v1.5 — is this user checked in (and not checked out) for today?
@@ -323,10 +327,10 @@ async function ticketDetail(id, storeId) {
     'SELECT * FROM ticket WHERE id=$1 AND store_id=$2', [id, storeId])).rows[0];
   if (!t) return null;
   const member = t.member_id
-    ? (await q('SELECT * FROM member WHERE id=$1', [t.member_id])).rows[0]
+    ? (await q('SELECT * FROM member WHERE id=$1 AND store_id=$2', [t.member_id, storeId])).rows[0] || null
     : null;
   const assigned = t.assigned_user_id
-    ? (await q('SELECT id, name, role FROM app_user WHERE id=$1', [t.assigned_user_id])).rows[0]
+    ? (await q('SELECT id, name, role FROM app_user WHERE id=$1 AND store_id=$2', [t.assigned_user_id, storeId])).rows[0]
     : null;
   const items = (await q(
     `SELECT ti.*, COALESCE(s.name, ti.custom_name) AS service_name, s.category, s.duration_min
@@ -847,7 +851,7 @@ app.get('/api/reports', requireOwner, async (req, res) => {
             u.name, COUNT(DISTINCT p.ticket_id)::int AS bills,
             COALESCE(SUM(p.amount),0)::float AS amount
        FROM payment p JOIN ticket t ON t.id = p.ticket_id
-       LEFT JOIN app_user u ON u.id = COALESCE(t.assigned_user_id, t.created_by)
+       LEFT JOIN app_user u ON u.id = COALESCE(t.assigned_user_id, t.created_by) AND u.store_id = t.store_id
       WHERE ${payWhere}
       GROUP BY COALESCE(t.assigned_user_id, t.created_by), u.name
       ORDER BY amount DESC`, params)).rows;
@@ -919,8 +923,8 @@ app.get('/api/reports', requireOwner, async (req, res) => {
             MAX(p.created_at) AS paid_at
        FROM payment p
        JOIN ticket t ON t.id = p.ticket_id
-       LEFT JOIN member m ON m.id = t.member_id
-       LEFT JOIN app_user u ON u.id = COALESCE(t.assigned_user_id, t.created_by)
+       LEFT JOIN member m ON m.id = t.member_id AND m.store_id = t.store_id
+       LEFT JOIN app_user u ON u.id = COALESCE(t.assigned_user_id, t.created_by) AND u.store_id = t.store_id
       WHERE ${payWhere}
       GROUP BY t.id, m.name, u.name, t.staff_name
       ORDER BY MAX(p.created_at) DESC
@@ -1515,7 +1519,7 @@ app.get('/api/tickets', async (req, res) => {
     `SELECT t.*, m.name AS member_name,
             COALESCE(SUM(ti.quoted_price*ti.qty),0)::float AS total
        FROM ticket t
-       LEFT JOIN member m ON m.id = t.member_id
+       LEFT JOIN member m ON m.id = t.member_id AND m.store_id = t.store_id
        LEFT JOIN ticket_item ti ON ti.ticket_id = t.id
       WHERE t.status IN ${statuses} AND t.store_id=$1 AND t.voided_at IS NULL
         ${dateSql}${staffSql}
@@ -1526,6 +1530,14 @@ app.get('/api/tickets', async (req, res) => {
 
 app.post('/api/tickets', async (req, res) => {
   const { member_id, staff_name, assigned_user_id } = req.body;
+  for (const [table, raw] of [['member', member_id], ['app_user', assigned_user_id]]) {
+    if (raw == null) continue;
+    const id = canonicalUserId(raw);
+    if (id == null || !(await q(
+      `SELECT id FROM ${table} WHERE id=$1 AND store_id=$2`,
+      [id, req.user.storeId])).rows[0])
+      return res.status(404).json({ error: `${table} not found` });
+  }
   // §v0.8 — store_id derived from session (was hardcoded 1).
   // §v1.4 — record who opened the bill so staff can later see only their own.
   const t = (await q(
@@ -2311,7 +2323,7 @@ app.get('/api/queue', async (req, res) => {
   // Live open/in_progress tickets with member name for labels.
   const tickets = (await q(
     `SELECT t.*, m.name AS member_name
-       FROM ticket t LEFT JOIN member m ON m.id = t.member_id
+       FROM ticket t LEFT JOIN member m ON m.id = t.member_id AND m.store_id = t.store_id
       WHERE t.status IN ('open','in_progress') AND t.store_id=$1 AND t.voided_at IS NULL
       ORDER BY t.created_at`, [storeId])).rows;
 

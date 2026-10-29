@@ -1,0 +1,46 @@
+// Run only against a disposable database; server/providers use an isolated env.
+// E2E_DATABASE_URL=... node server/e2e/tenancy-auth.mjs
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import net from 'node:net';
+import assert from 'node:assert/strict';
+import pg from 'pg';
+const dbURL = process.env.E2E_DATABASE_URL;
+assert.ok(dbURL, 'E2E_DATABASE_URL must point to throwaway PostgreSQL');
+const socket = net.createServer().listen(0, '127.0.0.1');
+await once(socket, 'listening'); const port = socket.address().port; await new Promise(r => socket.close(r));
+const srv = spawn(process.execPath, ['index.js'], { cwd: process.env.E2E_SERVER_DIR || new URL('..', import.meta.url), env: { PATH: process.env.PATH, PORT: String(port), DATABASE_URL: dbURL }, stdio: ['ignore','pipe','pipe'] });
+let logs = ''; srv.stdout.on('data', d => logs += d); srv.stderr.on('data', d => logs += d);
+const db = new pg.Pool({connectionString: dbURL});
+const q = (s,p) => db.query(s,p); let failures = 0;
+const check = async (name, fn) => { try { await fn(); console.log('PASS',name); } catch(e) { failures++; console.error('FAIL',name,e.message); } };
+const call = (path, token, body, method = 'POST') => fetch(`http://127.0.0.1:${port}/api${path}`, { method, signal: AbortSignal.timeout(5000), headers: {'content-type':'application/json', authorization:`Bearer ${token}`}, ...(body === undefined ? {} : {body:JSON.stringify(body)}) });
+try {
+  for(let i=0;i<100;i++){try{if((await call('/health','',undefined,'GET')).ok)break;}catch{} await new Promise(r=>setTimeout(r,100));}
+  const users = (await q('SELECT * FROM app_user WHERE store_id=1 ORDER BY id')).rows;
+  const owner = users.find(u=>u.role==='owner'), staff = users.find(u=>u.role==='staff');
+  const login = async (u,pin) => (await (await call('/auth/login','',{userId:u.id,pin})).json()).token;
+  const ot = await login(owner,'1234'), st = await login(staff,'5678');
+  const other = (await q("INSERT INTO store(name) VALUES ('foreign') RETURNING id")).rows[0].id;
+  const member = (await q("INSERT INTO member(store_id,name) VALUES ($1,'private') RETURNING id",[other])).rows[0].id;
+  const ownMember = (await q("INSERT INTO member(store_id,name) VALUES (1,'local') RETURNING id")).rows[0].id;
+  const foreignUser = (await q("INSERT INTO app_user(store_id,name,role,pin_hash) VALUES ($1,'foreign','staff',$2) RETURNING id",[other,staff.pin_hash])).rows[0].id;
+  const service = (await q("INSERT INTO service(store_id,name) VALUES ($1,'private') RETURNING id",[other])).rows[0].id;
+  await check('foreign member rejected before ticket insert',async()=>{const before=(await q('SELECT count(*) FROM ticket')).rows; assert.equal((await call('/tickets',ot,{member_id:member})).status,404); assert.deepEqual((await q('SELECT count(*) FROM ticket')).rows,before);});
+  await check('foreign assignee rejected on create',async()=>assert.equal((await call('/tickets',ot,{assigned_user_id:foreignUser})).status,404));
+  const t = await (await call('/tickets',ot,{member_id:ownMember})).json();
+  await check('local member and null accepted',async()=>{assert.equal(t.member.id,ownMember); assert.equal((await call('/tickets',ot,{member_id:null})).status,200);});
+  for(const path of ['/assign','/start']) await check('foreign assignee '+path,async()=>assert.equal((await call(`/tickets/${t.id}${path}`,ot,{assigned_user_id:foreignUser},path==='/assign'?'PUT':'POST')).status,404));
+  await check('foreign service rejected',async()=>assert.equal((await call(`/tickets/${t.id}/items`,ot,{service_id:service,quoted_price:10})).status,404));
+  for(const path of ['check-in','check-out']) await check('foreign attendance '+path,async()=>assert.equal((await call('/attendance/'+path,ot,{user_id:foreignUser})).status,404));
+  await check('member profile update scoped',async()=>assert.equal((await call(`/members/${member}`,ot,{name:'leak'},'PUT')).status,400));
+  await check('assign update cannot change member',async()=>{await call(`/tickets/${t.id}/assign`,ot,{assigned_user_id:null,member_id:member},'PUT');assert.equal((await q('SELECT member_id FROM ticket WHERE id=$1',[t.id])).rows[0].member_id,ownMember);});
+  await check('legacy foreign reference is not disclosed',async()=>{await q('UPDATE ticket SET member_id=$1 WHERE id=$2',[member,t.id]);const d=await(await call(`/tickets/${t.id}`,ot,undefined,'GET')).json();assert.equal(d.member,null);});
+  const staffTicket=await(await call('/tickets',st,{})).json();
+  const discount=pin=>call(`/tickets/${staffTicket.id}/discount`,st,{discount_type:'baht',discount_value:10,override_pin:pin},'PUT');
+  await check('override permits correct PIN before exhaustion',async()=>assert.equal((await discount('1234')).status,200));
+  await check('concurrent override attempts cap correct PIN after failures',async()=>{await Promise.all(Array.from({length:8},()=>discount('0000')));assert.equal((await discount('1234')).status,403);assert.ok(await login(owner,'1234'),'login namespace remains independent');});
+  await check('role changes apply immediately',async()=>{await q("UPDATE app_user SET role='staff' WHERE id=$1",[owner.id]);assert.equal((await call('/users',ot,undefined,'GET')).status,403);});
+  await check('store changes apply immediately',async()=>{await q('UPDATE app_user SET store_id=$1 WHERE id=$2',[other,owner.id]);const members=await(await call('/members',ot,undefined,'GET')).json();assert.deepEqual(members.map(m=>m.id),[member]);});
+  await check('inactive user rejected and session deleted',async()=>{await q('UPDATE app_user SET active=false WHERE id=$1',[owner.id]);assert.equal((await call('/members',ot,undefined,'GET')).status,401);assert.equal((await q('SELECT 1 FROM app_session WHERE token=$1',[ot])).rowCount,0);});
+} finally { if(srv.exitCode===null) {srv.kill(); await once(srv,'exit');} await db.end(); if(failures) { console.error(logs); process.exitCode=1; } }
