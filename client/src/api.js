@@ -186,6 +186,8 @@ export const api = {
   queue: () => j('/api/queue'),
   assignTech: (id, assigned_user_id) => j(`/api/tickets/${id}/assign`, { method: 'PUT', body: JSON.stringify({ assigned_user_id }) }),
   startTicket: (id, assigned_user_id) => j(`/api/tickets/${id}/start`, { method: 'POST', body: JSON.stringify(assigned_user_id != null ? { assigned_user_id } : {}) }),
+  finishTicket: (id) => j(`/api/tickets/${id}/finish`, { method: 'POST' }),
+  extendTicket: (id) => j(`/api/tickets/${id}/extend`, { method: 'POST' }),
   sendQuote: (id) => j(`/api/tickets/${id}/quote/send`, { method: 'POST' }),
   confirmQuote: (id) => j(`/api/tickets/${id}/quote/confirm`, { method: 'POST' }),
   pay: (id, body) => j(`/api/tickets/${id}/payments`, { method: 'POST', body: paymentBody(body) }),
