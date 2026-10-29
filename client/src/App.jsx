@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { reportRange } from '../../server/business-time.js'
 import { api, baht, getToken, getUser, setAuth, clearAuth } from './api'
 
 const N = (v) => Number(v || 0)
@@ -3865,32 +3866,6 @@ function TopServicesBarChart({ byService, limit = 8 }) {
 }
 
 // local date -> 'YYYY-MM-DD' (browser-local, padded)
-function ymd(d) {
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
-}
-
-// compute {from,to} for a preset key
-function reportRange(preset) {
-  const now = new Date()
-  const today = ymd(now)
-  if (preset === 'today') return { from: today, to: today }
-  if (preset === 'week') {
-    const d = new Date(now)
-    // Monday of current week (getDay: 0=Sun..6=Sat)
-    const dow = (d.getDay() + 6) % 7 // 0=Mon..6=Sun
-    d.setDate(d.getDate() - dow)
-    return { from: ymd(d), to: today }
-  }
-  if (preset === 'month') {
-    const d = new Date(now.getFullYear(), now.getMonth(), 1)
-    return { from: ymd(d), to: today }
-  }
-  return { from: today, to: today } // custom defaults to today until edited
-}
-
 function Report({ flash, openTicket }) {
   const [preset, setPreset] = useState('today')
   const [from, setFrom] = useState(() => reportRange('today').from)

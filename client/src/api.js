@@ -216,9 +216,9 @@ export const api = {
 // Display-only money formatter. Defined once at module scope (not per-render).
 // Uses Intl.NumberFormat (THB) but preserves the exact prior visual output:
 //   - minimumFractionDigits: 0 → whole baht show no decimals (฿1,234)
-//   - maximumFractionDigits: 20 → never rounds existing decimals (matches old toLocaleString)
+//   - maximumFractionDigits: 2 → round display only, never stored accounting values
 //   - negatives keep the old "฿-250" sign placement (callers prepend +/- in JSX anyway)
-const bahtFmt = new Intl.NumberFormat('th-TH', { style: 'currency', currency: 'THB', minimumFractionDigits: 0, maximumFractionDigits: 20 })
+const bahtFmt = new Intl.NumberFormat('th-TH', { style: 'currency', currency: 'THB', minimumFractionDigits: 0, maximumFractionDigits: 2 })
 export const baht = (n) => {
   const v = Number(n || 0)
   return v < 0 ? '฿-' + bahtFmt.format(-v).slice(1) : bahtFmt.format(v)

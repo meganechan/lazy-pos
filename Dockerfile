@@ -4,6 +4,7 @@ WORKDIR /app/client
 COPY client/package.json ./
 RUN npm install
 COPY client/ ./
+COPY server/business-time.js /app/server/business-time.js
 RUN npm run build
 
 # ---- stage 2: server + built client ----
