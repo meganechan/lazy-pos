@@ -1,23 +1,13 @@
-// Run only against a disposable database; server/providers use an isolated env.
-// E2E_DATABASE_URL=... node server/e2e/robustness.mjs
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
-import net from 'node:net';
 import assert from 'node:assert/strict';
-import pg from 'pg';
+import { startServer } from './harness.mjs';
 import { api } from '../../client/src/api.js';
-const dbURL = process.env.E2E_DATABASE_URL;
-assert.ok(dbURL, 'E2E_DATABASE_URL must point to throwaway PostgreSQL');
-const socket = net.createServer().listen(0, '127.0.0.1');
-await once(socket, 'listening'); const port = socket.address().port; await new Promise(r => socket.close(r));
-const srv = spawn(process.execPath, ['index.js'], { cwd: process.env.E2E_SERVER_DIR || new URL('..', import.meta.url), env: { PATH: process.env.PATH, PORT: String(port), DATABASE_URL: dbURL }, stdio: ['ignore','pipe','pipe'] });
-let logs = ''; srv.stdout.on('data', d => logs += d); srv.stderr.on('data', d => logs += d);
-const db = new pg.Pool({connectionString: dbURL});
+const h = await startServer();
+const db = h.db;
+const port = new URL(h.base).port;
 const q = (s,p) => db.query(s,p); let failures = 0;
 const check = async (name, fn) => { try { await fn(); console.log('PASS',name); } catch(e) { failures++; console.error('FAIL',name,e.message); } };
 const call = (path, token, body, method = 'POST') => fetch(`http://127.0.0.1:${port}/api${path}`, { method, signal: AbortSignal.timeout(5000), headers: {'content-type':'application/json', authorization:`Bearer ${token}`}, ...(body === undefined ? {} : {body:JSON.stringify(body)}) });
 try {
-  for(let i=0;i<100;i++){try{if((await call('/health','',undefined,'GET')).ok)break;}catch{} await new Promise(r=>setTimeout(r,100));}
   const owner=(await q("SELECT id FROM app_user WHERE role='owner' LIMIT 1")).rows[0];
   const token=(await(await call('/auth/login','',{userId:owner.id,pin:'1234'})).json()).token;
   const scenario=process.argv[2] || 'all';
@@ -48,6 +38,7 @@ try {
   }
   if (scenario==='amount' || scenario==='all') {
     const t=await(await call('/tickets',token,{})).json();
+    await call(`/tickets/${t.id}/custom-item`,token,{name:'amount validation fixture',quoted_price:1000});
     for(const path of ['payments','bolt-intent']) {
       for(const amount of [-10,0,'NaN','10',null,true,1.001,0.001,1.0000001]) {
         await check(`${path} rejects ${JSON.stringify(amount)}`,async()=>{
@@ -78,10 +69,10 @@ try {
       try {
         const r=await call('/members',token,undefined,'GET');
         assert.equal(r.status,500); assert.deepEqual(await r.json(),{error:'internal server error'});
-        assert.match(logs,/request failed/);
+        assert.match(h.log(),/request failed/);
         assert.equal((await call('/health','',undefined,'GET')).status,200);
       } finally { await q('ALTER TABLE member_fault_injection RENAME TO member'); }
       assert.equal((await call('/members',token,undefined,'GET')).status,200);
     });
   }
-} finally { if(srv.exitCode===null) {srv.kill(); await once(srv,'exit');} await db.end(); if(failures) { console.error(logs); process.exitCode=1; } }
+} finally { await h.close(); if(failures) { console.error(h.log()); process.exitCode=1; } }

@@ -177,9 +177,11 @@ async function withRetry(fn, tries = 30) {
 // ---- audit helper ----
 // Inserts an audit_log row. Wrapped so an audit failure NEVER breaks the
 // main request (best-effort logging).
-async function audit(actorUserId, storeId, action, entity, entityId, detail) {
+async function audit(actorUserId, storeId, action, entity, entityId, detail, query = q) {
+  const transactional = query !== q;
+  if (transactional) await query('SAVEPOINT audit_write');
   try {
-    await q(
+    await query(
       `INSERT INTO audit_log (store_id, actor_user_id, action, entity, entity_id, detail)
        VALUES ($1,$2,$3,$4,$5,$6)`,
       [
@@ -191,7 +193,10 @@ async function audit(actorUserId, storeId, action, entity, entityId, detail) {
         detail == null ? null : JSON.stringify(detail),
       ]);
   } catch (e) {
+    if (transactional) await query('ROLLBACK TO SAVEPOINT audit_write');
     console.error('[audit] failed to write audit row:', e.message);
+  } finally {
+    if (transactional) await query('RELEASE SAVEPOINT audit_write');
   }
 }
 
@@ -324,17 +329,17 @@ async function bumpUsage(storeId, userId, kind) {
 // §v0.8 — store-scoped ticket detail. storeId constrains the parent ticket
 // lookup; if the ticket is not in this store (or absent) → null (caller 404s).
 // All child rows (member, items, payments, quote) hang off this scoped ticket.
-async function ticketDetail(id, storeId) {
-  const t = (await q(
+async function ticketDetail(id, storeId, query = q) {
+  const t = (await query(
     'SELECT * FROM ticket WHERE id=$1 AND store_id=$2', [id, storeId])).rows[0];
   if (!t) return null;
   const member = t.member_id
-    ? (await q('SELECT * FROM member WHERE id=$1 AND store_id=$2', [t.member_id, storeId])).rows[0] || null
+    ? (await query('SELECT * FROM member WHERE id=$1 AND store_id=$2', [t.member_id, storeId])).rows[0] || null
     : null;
   const assigned = t.assigned_user_id
-    ? (await q('SELECT id, name, role FROM app_user WHERE id=$1 AND store_id=$2', [t.assigned_user_id, storeId])).rows[0]
+    ? (await query('SELECT id, name, role FROM app_user WHERE id=$1 AND store_id=$2', [t.assigned_user_id, storeId])).rows[0]
     : null;
-  const items = (await q(
+  const items = (await query(
     `SELECT ti.*, COALESCE(s.name, ti.custom_name) AS service_name, s.category, s.duration_min
        FROM ticket_item ti LEFT JOIN service s ON s.id = ti.service_id
       WHERE ti.ticket_id=$1 ORDER BY ti.id`, [id])).rows
@@ -352,9 +357,9 @@ async function ticketDetail(id, storeId) {
         net: round2(gross - discount_amount),
       };
     });
-  const payments = (await q(
+  const payments = (await query(
     'SELECT * FROM payment WHERE ticket_id=$1 ORDER BY payment_seq', [id])).rows;
-  const quote = (await q(
+  const quote = (await query(
     'SELECT * FROM quote_confirm WHERE ticket_id=$1 ORDER BY id DESC LIMIT 1', [id])).rows[0] || null;
   // §v1.2 — totals after discounts. items_gross = Σ gross; subtotal = Σ net
   // (after per-item discounts); then the bill-level discount on the subtotal.
@@ -385,10 +390,10 @@ async function ticketDetail(id, storeId) {
 // manual close endpoint and the auto-close-on-full-payment path (DRY). This
 // ONLY updates ticket.status/closed_at — it never touches payment rows, the
 // idempotency key, or any hash (SACRED untouched).
-async function closeTicketRow(ticketId, storeId, userId, action) {
-  await q("UPDATE ticket SET status='closed', closed_at=now() WHERE id=$1 AND store_id=$2 AND status<>'closed'",
+async function closeTicketRow(ticketId, storeId, userId, action, query = q) {
+  await query("UPDATE ticket SET status='closed', closed_at=now() WHERE id=$1 AND store_id=$2 AND status<>'closed'",
     [ticketId, storeId]);
-  await audit(userId, storeId, action, 'ticket', ticketId, null);
+  await audit(userId, storeId, action, 'ticket', ticketId, null, query);
 }
 
 // Auto-close a bill once it is fully paid. Called AFTER the payment insert /
@@ -397,12 +402,57 @@ async function closeTicketRow(ticketId, storeId, userId, action) {
 // flips status→'closed' ONLY when success-paid ≥ net total (>0). Unpaid/partial
 // payments are 'pending' (not counted in `paid`) so they never reach total →
 // the bill stays open, exactly as specified.
-async function maybeCloseOnFullPayment(ticketId, storeId, userId) {
-  const d = await ticketDetail(ticketId, storeId);
+async function maybeCloseOnFullPayment(ticketId, storeId, userId, query = q) {
+  const d = await ticketDetail(ticketId, storeId, query);
   if (!d || d.status === 'closed') return;
   if (!(Number(d.total) > 0)) return;            // empty bill / nothing due
   if (Number(d.paid) < Number(d.total)) return;  // unpaid / partial → keep open
-  await closeTicketRow(ticketId, storeId, userId, 'ticket_auto_close_paid');
+  await closeTicketRow(ticketId, storeId, userId, 'ticket_auto_close_paid', query);
+}
+
+// Serialize payment decisions on the ticket, including totals, sequence and close.
+// Provider calls happen AFTER commit: the stored idempotency key stays durable.
+const conflict = code => Object.assign(new Error(code), { status: 409 });
+async function withTicketLock(ticketId, storeId, work) {
+  const client = await pool.connect();
+  const query = (text, params) => client.query(text, params);
+  try {
+    await query('BEGIN');
+    const ticket = (await query('SELECT * FROM ticket WHERE id=$1 AND store_id=$2 FOR UPDATE',
+      [ticketId, storeId])).rows[0];
+    if (!ticket) throw Object.assign(new Error('ticket not found'), { status: 404 });
+    const result = await work(query, ticket);
+    await query('COMMIT');
+    return result;
+  } catch (error) {
+    await query('ROLLBACK');
+    throw error;
+  } finally { client.release(); }
+}
+
+async function paymentBalance(query, ticket) {
+  if (ticket.status === 'closed' || ticket.voided_at) throw conflict('ticket_closed');
+  const detail = await ticketDetail(ticket.id, ticket.store_id, query);
+  const outstanding = round2(Math.max(0, detail.total - detail.paid));
+  if (outstanding === 0) throw conflict('amount_exceeds_outstanding');
+  return outstanding;
+}
+
+// Webhook/poll/cancel share one transition gate. Re-read under the ticket lock:
+// a request's earlier snapshot must not overwrite a concurrent success/void.
+async function transitionPayment(p, requested, actorId) {
+  return withTicketLock(p.ticket_id, p.store_id, async (query) => {
+    const current = (await query('SELECT * FROM payment WHERE id=$1 AND ticket_id=$2 FOR UPDATE',
+      [p.id, p.ticket_id])).rows[0];
+    const allowed = current.status === 'pending'
+      || (current.status === 'failed' && ['success', 'voided'].includes(requested));
+    const applied = !!requested && allowed && current.status !== requested;
+    if (applied) {
+      await query('UPDATE payment SET status=$2 WHERE id=$1', [p.id, requested]);
+      if (requested === 'success') await maybeCloseOnFullPayment(p.ticket_id, p.store_id, actorId, query);
+    }
+    return { status: applied ? requested : current.status, applied };
+  });
 }
 
 // §v1.4 — ticket access guard (staff see only their own bills). Resolves the
@@ -652,9 +702,8 @@ app.post('/api/webhooks/beam', async (req, res) => {
     if (PAID) newStatus = 'success';
     else if (FAILED) newStatus = 'failed';
     if (newStatus) {
-      await q(`UPDATE payment SET status=$2 WHERE id=$1`, [p.id, newStatus]);
-      // §issue#31 Part 4 — bolt success (webhook) fully paid → auto-close.
-      if (newStatus === 'success') await maybeCloseOnFullPayment(p.ticket_id, p.store_id, null);
+      const transition = await transitionPayment(p, newStatus, null);
+      newStatus = transition.applied ? transition.status : null;
     }
     await audit(null, p.store_id, 'bolt_webhook', 'payment', p.id,
       { event: event || null, result: body.result || null, status: body.status || null,
@@ -1955,7 +2004,7 @@ app.post('/api/tickets/:id/quote/confirm', async (req, res) => {
 // Payment — cash / beam_edc / unpaid. EDC simulated (persist-before-send).
 app.post('/api/tickets/:id/payments', async (req, res) => {
   // §v0.8 — store scope only: confirm the ticket belongs to this store before
-  // taking payment. The payment/idempotency logic below is UNCHANGED (SACRED).
+  // taking payment. Lifecycle checks below are serialized; key semantics stay unchanged.
   const ticket = await guardTicket(req, res); // §v1.4 staff → own bills only
   if (!ticket) return;
   const { method, amount, simulate } = req.body;
@@ -1963,43 +2012,37 @@ app.post('/api/tickets/:id/payments', async (req, res) => {
     return res.status(400).json({ error: 'amount must be a positive number with at most two decimal places' });
   if (!['cash', 'beam_edc', 'unpaid'].includes(method))
     return res.status(400).json({ error: 'bad method' });
-  const seq = (await q(
-    'SELECT COALESCE(MAX(payment_seq),0)+1 AS n FROM payment WHERE ticket_id=$1',
-    [req.params.id])).rows[0].n;
-
-  // beam.js is a legacy always-success mock; with real Bolt creds an EDC
-  // charge must go through /bolt-intent, never here.
+  // beam.js is a legacy mock; real EDC must use Bolt.
   if (method === 'beam_edc' && !beamBoltAdapter.mock)
     return res.status(400).json({ error: 'use_bolt_intent' });
 
-  if (method === 'beam_edc') {
-    // INVARIANT 1: persist idempotency key (durable) BEFORE calling Beam
-    const key = randomUUID();
-    const p = (await q(
-      `INSERT INTO payment (ticket_id, payment_seq, method, amount, beam_idempotency_key, status)
-       VALUES ($1,$2,'beam_edc',$3,$4,'pending') RETURNING *`,
-      [req.params.id, seq, amount, key])).rows[0];
-    // INVARIANT 1 satisfied: row durable. Now call Beam via adapter.
+  const p = await withTicketLock(req.params.id, req.user.storeId, async (query, locked) => {
+    const outstanding = await paymentBalance(query, locked);
+    if (method !== 'unpaid' && amount > outstanding) throw conflict('amount_exceeds_outstanding');
+    const seq = (await query(
+      'SELECT COALESCE(MAX(payment_seq),0)+1 AS n FROM payment WHERE ticket_id=$1',
+      [req.params.id])).rows[0].n;
+    if (method === 'beam_edc') {
+      const key = randomUUID();
+      return (await query(
+        `INSERT INTO payment (ticket_id, payment_seq, method, amount, beam_idempotency_key, status)
+         VALUES ($1,$2,'beam_edc',$3,$4,'pending') RETURNING *`,
+        [req.params.id, seq, amount, key])).rows[0];
+    }
+    await query(
+      `INSERT INTO payment (ticket_id, payment_seq, method, amount, status)
+       VALUES ($1,$2,$3,$4,$5)`,
+      [req.params.id, seq, method, amount, method === 'cash' ? 'success' : 'pending']);
+    await maybeCloseOnFullPayment(req.params.id, req.user.storeId, req.user.id, query);
+  });
+  if (p) {
+    // Persist-before-send and the generated key are unchanged.
     const result = await beamAdapter.charge({
-      idempotencyKey: key,
-      amount,
-      ticketId: req.params.id,
-      simulate,
+      idempotencyKey: p.beam_idempotency_key, amount, ticketId: req.params.id, simulate,
     });
-    await q(
-      `UPDATE payment SET status=$2, beam_charge_id=$3 WHERE id=$1`,
-      [p.id, result.status, result.beamChargeId || null]);
-  } else if (method === 'cash') {
-    await q(
-      `INSERT INTO payment (ticket_id, payment_seq, method, amount, status)
-       VALUES ($1,$2,'cash',$3,'success')`, [req.params.id, seq, amount]);
-  } else { // unpaid
-    await q(
-      `INSERT INTO payment (ticket_id, payment_seq, method, amount, status)
-       VALUES ($1,$2,'unpaid',$3,'pending')`, [req.params.id, seq, amount]);
+    await q('UPDATE payment SET beam_charge_id=$2 WHERE id=$1', [p.id, result.beamChargeId || null]);
+    await transitionPayment({ ...p, store_id: req.user.storeId }, result.status, req.user.id);
   }
-  // §issue#31 Part 4 — auto-close once fully paid (no-op for unpaid/partial/failed).
-  await maybeCloseOnFullPayment(req.params.id, req.user.storeId, req.user.id);
   res.json(await ticketDetail(req.params.id, req.user.storeId));
 });
 
@@ -2090,23 +2133,21 @@ app.post('/api/tickets/:id/bolt-intent', requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'ร้านยังไม่ได้ pair เครื่องรูดบัตร' });
   }
 
-  const amount =
-    req.body?.amount === undefined
-      ? round2(Number(ticket.total) - Number(ticket.paid)) : req.body.amount;
-  if (!validAmount(amount))
-    return res.status(400).json({ error: 'amount must be a positive number with at most two decimal places' });
-
-  const seq = (await q(
-    'SELECT COALESCE(MAX(payment_seq),0)+1 AS n FROM payment WHERE ticket_id=$1',
-    [req.params.id])).rows[0].n;
-
-  // INVARIANT 1: persist idempotency key (durable) BEFORE calling Beam.
-  // SAME pattern as the SACRED beam_edc block — randomUUID stored on the row.
-  const key = randomUUID();
-  const p = (await q(
-    `INSERT INTO payment (ticket_id, payment_seq, method, amount, beam_idempotency_key, status)
-     VALUES ($1,$2,'beam_edc',$3,$4,'pending') RETURNING id`,
-    [req.params.id, seq, amount, key])).rows[0];
+  let amount, key;
+  const p = await withTicketLock(req.params.id, req.user.storeId, async (query, locked) => {
+    const outstanding = await paymentBalance(query, locked);
+    amount = req.body?.amount === undefined ? outstanding : req.body.amount;
+    if (!validAmount(amount)) throw Object.assign(new Error('invalid amount'), { status: 400 });
+    if (amount > outstanding) throw conflict('amount_exceeds_outstanding');
+    key = randomUUID();
+    const seq = (await query(
+      'SELECT COALESCE(MAX(payment_seq),0)+1 AS n FROM payment WHERE ticket_id=$1',
+      [req.params.id])).rows[0].n;
+    return (await query(
+      `INSERT INTO payment (ticket_id, payment_seq, method, amount, beam_idempotency_key, status)
+       VALUES ($1,$2,'beam_edc',$3,$4,'pending') RETURNING id`,
+      [req.params.id, seq, amount, key])).rows[0];
+  });
   // INVARIANT 1 satisfied: row durable. Now create the Bolt Intent.
 
   let intent;
@@ -2124,7 +2165,7 @@ app.post('/api/tickets/:id/bolt-intent', requireAuth, async (req, res) => {
       idempotencyKey: key,
     });
   } catch (e) {
-    await q(`UPDATE payment SET status='failed' WHERE id=$1`, [p.id]);
+    await transitionPayment({ ...p, ticket_id: req.params.id, store_id: req.user.storeId }, 'failed', req.user.id);
     return res.status(502).json({ error: String(e.message || e) });
   }
 
@@ -2169,20 +2210,10 @@ async function syncBoltPayment(p, req, simulate) {
     'CH_PROCESSING_FAILED', 'CH_INSUFFICIENT_FUNDS', 'CH_AUTHENTICATION_FAILED',
     'BI_EXPIRED', 'BI_CANCELED',
   ];
-  let status = p.status;
-  if (result === 'CH_SUCCEEDED') {
-    status = 'success';
-    await q(`UPDATE payment SET status='success' WHERE id=$1`, [p.id]);
-  } else if (FAILURES.includes(result)) {
-    status = 'failed';
-    await q(`UPDATE payment SET status='failed' WHERE id=$1`, [p.id]);
-  } // else: pending → leave status unchanged
-
+  const requested = result === 'CH_SUCCEEDED' ? 'success' : FAILURES.includes(result) ? 'failed' : null;
+  const { status, applied } = await transitionPayment({ ...p, store_id: req.user.storeId }, requested, req.user.id);
   await audit(req.user.id, req.user.storeId, 'payment', 'payment', p.id,
-    { bolt_result: result, status });
-
-  // §issue#31 Part 4 — bolt success (poll) fully paid → auto-close.
-  if (status === 'success') await maybeCloseOnFullPayment(req.params.id, req.user.storeId, req.user.id);
+    { bolt_result: result, status, applied });
 
   return {
     result,
@@ -2203,6 +2234,12 @@ app.post('/api/tickets/:id/bolt-intent/:pid/cancel', requireAuth, async (req, re
       WHERE p.id=$1 AND p.ticket_id=$2 AND t.store_id=$3`,
     [req.params.pid, req.params.id, req.user.storeId])).rows[0];
   if (!p) return res.status(404).json({ error: 'payment not found' });
+  if (['success', 'voided'].includes(p.status)) {
+    await audit(req.user.id, req.user.storeId, 'payment_void', 'payment', p.id,
+      { reason: 'bolt_cancel', applied: false, status: p.status });
+    return res.status(409).json({ error: 'payment_terminal', status: p.status });
+  }
+
 
   // boltIntentId was stored in beam_charge_id at creation time (PoC reuse).
   const boltIntentId = p.beam_charge_id;
@@ -2218,11 +2255,10 @@ app.post('/api/tickets/:id/bolt-intent/:pid/cancel', requireAuth, async (req, re
   }
 
   // Void the pending row (§3 'voided' enum) — same void logic as the manual void.
-  await q(
-    `UPDATE payment SET status='voided' WHERE id=$1 AND ticket_id=$2`,
-    [p.id, req.params.id]);
+  const transition = await transitionPayment({ ...p, store_id: req.user.storeId }, 'voided', req.user.id);
   await audit(req.user.id, req.user.storeId, 'payment_void', 'payment', p.id,
-    { ticket_id: req.params.id, reason: 'bolt_cancel', bolt_intent_id: boltIntentId, beam_error: beamError });
+    { ticket_id: req.params.id, reason: 'bolt_cancel', bolt_intent_id: boltIntentId, beam_error: beamError, applied: transition.applied, status: transition.status });
+  if (!transition.applied) return res.status(409).json({ error: 'payment_terminal', status: transition.status });
 
   res.json({
     ok: true,
@@ -2405,7 +2441,8 @@ app.get('*', (_req, res) => res.sendFile(join(clientDir, 'index.html')));
 app.use((err, req, res, next) => {
   console.error('[request failed]', req.method, req.path, err);
   if (res.headersSent) return next(err);
-  res.status(err.status === 400 ? 400 : 500).json({ error: err.status === 400 ? 'bad request' : 'internal server error' });
+  const status = [400, 404, 409].includes(err.status) ? err.status : 500;
+  res.status(status).json({ error: status === 500 ? 'internal server error' : status === 400 ? 'bad request' : err.message });
 });
 
 withRetry(bootstrap).then(() => {

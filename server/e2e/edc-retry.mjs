@@ -1,15 +1,8 @@
-// E2E: real server + throwaway Postgres + fake Beam, real-creds mode. Guards the
-// legacy always-success beam.js mock from ever marking a Bolt payment paid.
-// Run: docker run -d --rm -e POSTGRES_PASSWORD=lazy -e POSTGRES_USER=lazy -e POSTGRES_DB=lazypos -p 127.0.0.1:55432:5432 postgres:16-alpine
-//      E2E_DATABASE_URL=postgres://lazy:lazy@127.0.0.1:55432/lazypos node server/e2e/edc-retry.mjs
+// Real server, per-run disposable PG, and local fake Beam only.
 import http from 'node:http';
-import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import assert from 'node:assert/strict';
-import pg from 'pg';
-
-const DB = process.env.E2E_DATABASE_URL; // throwaway DB only — test inserts rows
-if (!DB) { console.error('set E2E_DATABASE_URL (e.g. docker postgres:16)'); process.exit(2); }
-const PORT = 58080;
+import { startServer } from './harness.mjs';
 let beamCalls = [];
 const beamResult = { bolti_t1: 'BI_EXPIRED', bolti_t2: 'CH_SUCCEEDED' };
 const beam = http.createServer((req, res) => {
@@ -17,26 +10,16 @@ const beam = http.createServer((req, res) => {
   const id = req.url.split('/').pop();
   res.setHeader('content-type', 'application/json');
   res.end(JSON.stringify({ id, result: beamResult[id] || '' }));
-}).listen(55999);
+}).listen(0, '127.0.0.1');
+await once(beam, 'listening');
 
-const srv = spawn('node', ['index.js'], {
-  cwd: new URL('..', import.meta.url).pathname,
-  env: { ...process.env, PORT: String(PORT), DATABASE_URL: DB,
-    BEAM_BOLT_MERCHANT_ID: 'm', BEAM_BOLT_API_KEY: 'k', BEAM_BOLT_API_BASE: 'http://127.0.0.1:55999',
-    BEAM_WEBHOOK_SECRET: Buffer.from('s').toString('base64') },
-  stdio: ['ignore', 'pipe', 'pipe'],
-});
-let log = '';
-srv.stdout.on('data', (d) => (log += d));
-srv.stderr.on('data', (d) => (log += d));
-const base = `http://127.0.0.1:${PORT}`;
-for (let i = 0; i < 50; i++) {
-  try { if ((await fetch(base + '/api/health')).ok) break; } catch {}
-  await new Promise((r) => setTimeout(r, 200));
-}
-
-const db = new pg.Pool({ connectionString: DB });
-const q = (t, p) => db.query(t, p);
+const h = await startServer({ env: {
+  BEAM_BOLT_MERCHANT_ID:'m', BEAM_BOLT_API_KEY:'k',
+  BEAM_BOLT_API_BASE:`http://127.0.0.1:${beam.address().port}`,
+} });
+const db=h.db, base=h.base;
+const q=(text,params)=>db.query(text,params);
+try {
 const owner = (await q(`SELECT id FROM app_user WHERE role='owner' AND store_id=1 LIMIT 1`)).rows[0].id;
 const { token } = await (await fetch(base + '/api/auth/login', { method: 'POST',
   headers: { 'content-type': 'application/json' }, body: JSON.stringify({ userId: owner, pin: '1234' }) })).json();
@@ -78,10 +61,10 @@ assert.equal((await q('SELECT status FROM ticket WHERE id=$1', [t])).rows[0].sta
 
 // 5. cash still works
 const t2 = (await q(`INSERT INTO ticket (store_id, status) VALUES (1,'open') RETURNING id`)).rows[0].id;
+await q("INSERT INTO ticket_item (ticket_id, custom_name, qty, quoted_price) VALUES ($1,'cash fixture',1,100)", [t2]);
 r = await post(`/api/tickets/${t2}/payments`, { method: 'cash', amount: 100 });
 assert.equal(r.status, 200);
 
 assert.ok(!(await q(`SELECT 1 FROM payment WHERE beam_charge_id LIKE 'beam\\_%'`)).rows.length, 'no legacy mock ids');
 console.log('E2E PASS — beam calls:', beamCalls);
-srv.kill(); beam.close(); await db.end();
-process.on('exit', (c) => c && console.log(log));
+} finally { await h.close(); await new Promise(r=>beam.close(r)); }
