@@ -2,8 +2,8 @@
   /* ── CI palette: orange + white + black (no pastel) ── */
 
   /* accent / CTA / primary button = ORANGE (token name kept for JS/CSS reuse) */
-  --rose: #f97316;           /* CI orange accent */
-  --rose-dark: #ea580c;      /* hover / pressed orange */
+  --rose: #c2410c;           /* CI orange accent */
+  --rose-dark: #9a3412;      /* hover / pressed orange */
   --rose-soft: #fff3ea;      /* faint orange tint — avatar/chip only, used sparingly */
   /* brand / topbar / login-head / primary surfaces = NEAR-BLACK */
   --primary: #18181b;
@@ -1009,3 +1009,48 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   margin-top: var(--space-3);
 }
 .wiz-foot .btn { flex: 1; min-height: 48px; }
+
+/* Counter workflow: compact bills, persistent next action, quiet payment panel. */
+.checkout-view { padding-bottom: 100px; }
+.checkout-columns { display: grid; gap: 24px; }
+.checkout-items, .checkout-payment { min-width: 0; }
+.checkout-payment { border-top: 1px solid var(--border); padding-top: 12px; }
+.checkout-items .li { width: 100%; text-align: left; }
+.item-editor summary { display: flex; gap: 12px; align-items: center; cursor: pointer; min-height: 48px; list-style: none; }
+.item-editor summary::-webkit-details-marker { display: none; }
+.item-editor summary .meta { display: block; margin-top: 4px; }
+.item-editor[open] summary { border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+.editor-fields { padding-top: 12px; }
+.work-actions, .queue-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+.work-actions .btn, .queue-actions .btn { width: auto; flex: 1; min-width: 100px; }
+.queue-card { flex-wrap: wrap; }
+.queue-actions { width: 100%; }
+.integration-note { border-left: 3px solid var(--warn); padding: 10px 12px; background: #fffbeb; color: #78350f; font-size: 14px; }
+.load-error { padding: 20px; border: 1px solid var(--bad); border-radius: 12px; color: var(--bad); }
+.load-error .btn { margin-top: 12px; }
+.checkout-sticky { position: fixed; z-index: 25; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom)); width: min(calc(100% - 24px), 456px); display: flex; align-items: center; gap: 16px; padding: 12px 16px; border: 1px solid var(--border); border-radius: 14px; background: #fff; box-shadow: var(--shadow-lg); }
+.checkout-sticky > div { flex: 1; }
+.checkout-sticky strong { display: block; font-size: 24px; line-height: 1.2; }
+.checkout-sticky .btn { width: auto; min-width: 140px; }
+.checkout-view button, .checkout-view input, .checkout-view select, .checkout-view summary { scroll-margin-bottom: 190px; scroll-margin-top: 90px; }
+.cash-sheet { border: 0; border-radius: 20px 20px 0 0; padding: 24px 24px calc(24px + env(safe-area-inset-bottom)); width: min(100%, 480px); max-height: 90dvh; overflow-y: auto; margin: auto auto 0; box-shadow: var(--shadow-lg); color: var(--ink); background: white; overscroll-behavior: contain; }
+.cash-sheet::backdrop { background: rgba(24,24,27,.6); }
+.cash-heading { display: flex; gap: 16px; align-items: center; justify-content: space-between; }
+.cash-heading h2 { margin: 4px 0 20px; font-size: 25px; }
+.cash-heading .btn { width: auto; font-size: 24px; }
+.eyebrow { color: var(--muted); font-size: 13px; }
+.cash-due, .cash-change { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding: 16px 0; }
+.cash-due { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); margin-bottom: 18px; }
+.cash-due strong { font-size: 30px; }
+.cash-change strong { font-size: 24px; }
+.cash-sheet input { font-size: 28px; }
+.pay:disabled { opacity: .5; cursor: not-allowed; }
+@media (min-width: 1024px) {
+  .app.lean { max-width: 1200px; }
+  .app.lean .tabbar { max-width: 1200px; }
+  .checkout-columns { grid-template-columns: minmax(0, 1.1fr) minmax(310px, .9fr); align-items: start; gap: 24px; }
+  .checkout-payment { border-top: 0; border-left: 1px solid var(--border); padding: 0 0 0 24px; }
+  .checkout-sticky { width: min(calc(100% - 48px), 1152px); }
+  .app.wide .checkout-sticky { left: calc(232px + (100% - 232px) / 2); width: calc(100% - 288px); max-width: 1200px; bottom: 16px; }
+  .cash-sheet { margin: auto; border-radius: 20px; }
+}

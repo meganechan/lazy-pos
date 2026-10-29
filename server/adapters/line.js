@@ -11,16 +11,18 @@ import { randomUUID } from 'node:crypto';
 export function createLineAdapter(env = {}) {
   const token = env.LINE_CHANNEL_ACCESS_TOKEN;
   const secret = env.LINE_CHANNEL_SECRET;
-  const mock = !token || !secret;
+  // This adapter is a stub even when credentials are present. Never claim delivery.
+  const mock = true;
   if (mock) {
-    console.log('[line] running in MOCK mode (LINE channel credentials not set)');
+    console.log('[line] demo adapter: no LINE message is sent');
   }
 
   return {
+    mock,
     // pushQuote({ lineUserId, ticketId, quotedTotal })
     //   -> Promise<{ lineMsgId: string }>
     async pushQuote({ lineUserId, ticketId, quotedTotal } = {}) {
-      return { lineMsgId: 'line_' + randomUUID().slice(0, 8) };
+      return { lineMsgId: 'line_' + randomUUID().slice(0, 8), mock: true, sent: false };
     },
 
     // confirm({ ticketId }) -> Promise<{ confirmed: true }>

@@ -379,6 +379,7 @@ async function ticketDetail(id, storeId, query = q) {
   return {
     ...t,
     member,
+    line_mock: lineAdapter.mock,
     assigned_name: assigned ? assigned.name : null,
     busy_until: bu ? bu.toISOString() : null,
     discount_type: t.discount_type ?? null,
@@ -1694,7 +1695,6 @@ app.post('/api/tickets/:id/items', async (req, res) => {
     `INSERT INTO ticket_item (ticket_id, service_id, qty, quoted_price, note, minutes, is_staff_price)
      VALUES ($1,$2,$3,$4,$5,$6,$7)`,
     [req.params.id, service_id, qty || 1, price, note || null, mins, useStaffPrice]);
-  await q("UPDATE ticket SET status='in_progress' WHERE id=$1 AND status='open'", [req.params.id]);
   await recomputeEstMinutes(req.params.id);
   res.json(await ticketDetail(req.params.id, req.user.storeId));
 });
@@ -1714,7 +1714,6 @@ app.post('/api/tickets/:id/custom-item', async (req, res) => {
      VALUES ($1, NULL, $2, $3, $4, NULL, $5)`,
     [req.params.id, String(name).trim(), qty || 1, quoted_price,
      minutes == null || minutes === '' ? null : minutes]);
-  await q("UPDATE ticket SET status='in_progress' WHERE id=$1 AND status='open'", [req.params.id]);
   await recomputeEstMinutes(req.params.id);
   res.json(await ticketDetail(req.params.id, req.user.storeId));
 });
@@ -2009,6 +2008,7 @@ app.post('/api/tickets/:id/quote/send', async (req, res) => {
   // §v0.8 — ticketDetail is store-scoped; null → 404 (incl cross-tenant).
   const d = await ticketDetail(req.params.id, req.user.storeId);
   if (!d) return res.status(404).json({ error: 'not found' });
+  if (!d.member?.line_user_id) return res.status(400).json({ error: 'member_has_no_line_id' });
   const { lineMsgId: msgId } = await lineAdapter.pushQuote({
     lineUserId: d.member?.line_user_id || null,
     ticketId: req.params.id,
@@ -2354,6 +2354,24 @@ app.post('/api/tickets/:id/start', async (req, res) => {
   res.json(await ticketDetail(req.params.id, req.user.storeId));
 });
 
+// Work completion is separate from payment. Both actions remain ticket-scoped.
+app.post('/api/tickets/:id/finish', async (req, res) => {
+  if (!(await guardTicket(req, res))) return;
+  const changed = await q("UPDATE ticket SET status='done' WHERE id=$1 AND store_id=$2 AND status='in_progress' AND voided_at IS NULL",
+    [req.params.id, req.user.storeId]);
+  if (!changed.rowCount) return res.status(409).json({ error: 'ticket_not_in_progress' });
+  await audit(req.user.id, req.user.storeId, 'work_finish', 'ticket', req.params.id, null);
+  res.json(await ticketDetail(req.params.id, req.user.storeId));
+});
+app.post('/api/tickets/:id/extend', async (req, res) => {
+  if (!(await guardTicket(req, res))) return;
+  const changed = await q("UPDATE ticket SET est_minutes=COALESCE(est_minutes,0)+10 WHERE id=$1 AND store_id=$2 AND status='in_progress' AND voided_at IS NULL",
+    [req.params.id, req.user.storeId]);
+  if (!changed.rowCount) return res.status(409).json({ error: 'ticket_not_in_progress' });
+  await audit(req.user.id, req.user.storeId, 'work_extend', 'ticket', req.params.id, { minutes: 10 });
+  res.json(await ticketDetail(req.params.id, req.user.storeId));
+});
+
 app.post('/api/tickets/:id/close', async (req, res) => {
   // §v0.8 — scope close to this store. §v1.4 staff → own bills only.
   const t = await guardTicket(req, res);
@@ -2408,10 +2426,10 @@ app.get('/api/queue', async (req, res) => {
   const activeByTech = new Map();
   for (const t of tickets) {
     const bu = busyUntil(t);
-    if (bu && bu.getTime() > now && t.assigned_user_id != null) {
+    if (t.status === 'in_progress' && t.assigned_user_id != null) {
       const prev = activeByTech.get(t.assigned_user_id);
       // Keep the one finishing latest (the genuine current lock).
-      if (!prev || busyUntil(prev).getTime() < bu.getTime())
+      if (!prev || (busyUntil(prev)?.getTime() || 0) < (bu?.getTime() || 0))
         activeByTech.set(t.assigned_user_id, t);
     }
   }
@@ -2425,6 +2443,7 @@ app.get('/api/queue', async (req, res) => {
       role: tech.role,
       status: active ? 'busy' : 'available',
       busy_until: bu ? bu.toISOString() : null,
+      overrun: !!(active && bu && bu.getTime() < now),
       remaining_min: bu ? Math.max(0, Math.ceil((bu.getTime() - now) / 60000)) : 0,
       current_ticket_id: active ? active.id : null,
       current_ticket_label: active ? labelOf(active) : null,

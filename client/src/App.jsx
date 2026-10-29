@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { outstandingAmount, cashChange, queueStateLabel } from './checkout.js'
 import { reportRange } from '../../server/business-time.js'
 import { api, baht, getToken, getUser, setAuth, clearAuth } from './api'
 
@@ -656,13 +657,16 @@ function Dashboard({ flash, openTicket, onNewTicket, onNewMember, canManage, isO
 function Members({ openMember, onNewMember, ownerPhone }) {
   const [list, setList] = useState(null)
   const [q, setQ] = useState('')
+  const [loadError, setLoadError] = useState('')
+  const [retry, setRetry] = useState(0)
 
   useEffect(() => {
     const t = setTimeout(() => {
-      api.members(q).then(setList).catch(() => setList([]))
+      setLoadError('')
+      api.members(q).then(setList).catch(e => setLoadError(e.message))
     }, 250)
     return () => clearTimeout(t)
-  }, [q])
+  }, [q, retry])
 
   return (
     <>
@@ -674,8 +678,9 @@ function Members({ openMember, onNewMember, ownerPhone }) {
       <div className="spacer" />
       <input type="search" aria-label="ค้นหาสมาชิก" value={q} onChange={(e) => setQ(e.target.value)} placeholder="ค้นหาชื่อ/เบอร์…" />
       <div className="spacer" />
+      {loadError && <div className="load-error" role="alert">โหลดสมาชิกไม่สำเร็จ: {loadError}<button className="btn secondary" onClick={() => setRetry(n => n + 1)}>ลองอีกครั้ง</button></div>}
       {!list ? (
-        <Loading />
+        loadError ? null : <Loading />
       ) : list.length === 0 ? (
         <div className="empty"><div className="big"><Icon name="users" size={32} /></div>{q.trim() ? 'ไม่พบสมาชิกที่ค้นหา' : 'ยังไม่มีสมาชิก'}</div>
       ) : (
@@ -1416,6 +1421,7 @@ function Tickets({ openTicket, isOwner }) {
   // Everyone starts at today/pending. Staff are locked to TODAY (server clamps any
   // filtered call; we also hide the period controls so the UI stays honest).
   const [list, setList] = useState(null)
+  const [loadError, setLoadError] = useState('')
   const [status, setStatus] = useState('pending')
   const [preset, setPreset] = useState('today')
   const [from, setFrom] = useState(() => reportRange('today').from)
@@ -1423,7 +1429,8 @@ function Tickets({ openTicket, isOwner }) {
 
   const load = (st, f, t) => {
     setList(null)
-    api.tickets({ status: st, from: f, to: t }).then(setList).catch(() => setList([]))
+    setLoadError('')
+    api.tickets({ status: st, from: f, to: t }).then(setList).catch(e => setLoadError(e.message))
   }
 
   // on mount: pending + today for everyone
@@ -1507,6 +1514,7 @@ function Tickets({ openTicket, isOwner }) {
     </div>
   )
 
+  if (loadError) return <>{filterBar}<div className="load-error" role="alert">โหลดบิลไม่สำเร็จ: {loadError}<button className="btn secondary" onClick={() => load(status, from, to)}>ลองอีกครั้ง</button></div></>
   if (!list) return <>{filterBar}<Loading /></>
   if (list.length === 0) return <>{filterBar}<div className="empty"><div className="big"><Icon name="receipt" size={32} /></div>ไม่มีบิลตามตัวกรอง</div></>
 
@@ -1531,6 +1539,12 @@ function Tickets({ openTicket, isOwner }) {
 /* ───────────────────────── Queue board ───────────────────────── */
 function QueueBoard({ flash, openTicket }) {
   const [q, setQ] = useState(null)
+  const [busyAction, setBusy] = useState(false)
+  const act = async (id, action) => {
+    setBusy(true)
+    try { await (action === 'finish' ? api.finishTicket(id) : api.extendTicket(id)); await load() }
+    catch(e) { flash(e.message) } finally { setBusy(false) }
+  }
 
   const load = () => api.queue().then(setQ).catch(() => flash('โหลดคิวไม่สำเร็จ'))
   useEffect(() => {
@@ -1555,14 +1569,14 @@ function QueueBoard({ flash, openTicket }) {
         techs.map((tech) => {
           const busy = tech.status === 'busy'
           return (
-            <div className="li" key={tech.id}>
+            <div className="li queue-card" key={tech.id}>
               <div className="avatar">{(tech.name || '?').charAt(0).toUpperCase()}</div>
               <div className="grow">
                 <div className="name">{tech.name}</div>
                 <div className="meta">
                   {busy ? (
                     <>
-                      ติดถึง {fmtTime(tech.busy_until)} (เหลือ {N(tech.remaining_min)} นาที)
+                      {tech.overrun ? 'เกินเวลาประมาณการ · งานยังไม่เสร็จ' : `ประมาณ ${fmtTime(tech.busy_until)} · เหลือ ${N(tech.remaining_min)} นาที`}
                       {tech.current_ticket_label ? ' · ' + tech.current_ticket_label : ''}
                     </>
                   ) : (
@@ -1571,8 +1585,13 @@ function QueueBoard({ flash, openTicket }) {
                 </div>
               </div>
               <span className={'badge ' + (busy ? 'failed' : 'done')}>
-                {busy ? 'ไม่ว่าง' : 'ว่าง'}
+                {queueStateLabel(tech)}
               </span>
+              {busy && (getUser()?.role === 'owner' || getUser()?.id === tech.id) && <div className="queue-actions">
+                <button className="btn secondary" disabled={busyAction} onClick={() => act(tech.current_ticket_id, 'extend')}>+10 นาที</button>
+                <button className="btn" disabled={busyAction} onClick={() => act(tech.current_ticket_id, 'finish')}>เสร็จงาน</button>
+                <button className="btn ghost" onClick={() => openTicket(tech.current_ticket_id)}>เปิดบิล</button>
+              </div>}
             </div>
           )
         })
@@ -1644,15 +1663,13 @@ function NewTicket({ flash, preMember, onCreated }) {
 
   return (
     <div className="card">
-      <label>ลูกค้า (เว้นว่างได้ = ลูกค้าทั่วไป)</label>
-      <select value={memberId} onChange={(e) => setMemberId(e.target.value)}>
+      <label>ลูกค้า (เว้นว่างได้ = ลูกค้าทั่วไป)<select value={memberId} onChange={(e) => setMemberId(e.target.value)}>
         <option value="">— ลูกค้าทั่วไป (Walk-in) —</option>
         {(members || []).map((m) => (
           <option key={m.id} value={m.id}>{m.name}{m.phone ? ' · ' + m.phone : ''}</option>
         ))}
-      </select>
-      <label>ช่าง (มอบหมาย)</label>
-      <select value={assignId} onChange={(e) => setAssignId(e.target.value)}>
+      </select></label>
+      <label>ช่าง (มอบหมาย)<select value={assignId} onChange={(e) => setAssignId(e.target.value)}>
         <option value="">— ยังไม่มอบหมาย —</option>
         {techs.map((tech) => {
           const ts = techStatus[tech.id]
@@ -1663,7 +1680,7 @@ function NewTicket({ flash, preMember, onCreated }) {
             </option>
           )
         })}
-      </select>
+      </select></label>
       {techs.length === 0 && <div className="meta" style={{ marginTop: 4 }}>ยังไม่มีพนักงานเข้างาน</div>}
       {selBusy && (
         <div className="note-warn">
@@ -1813,6 +1830,28 @@ function ServiceGallery({ serviceId, name, onClose }) {
   )
 }
 
+function CashSheet({ outstanding, busy, onConfirm, onCancel }) {
+  const dialog = useRef(null)
+  const [received, setReceived] = useState('')
+  const change = cashChange(received, outstanding)
+  useEffect(() => {
+    const previous = document.activeElement
+    dialog.current.showModal()
+    return () => previous?.focus()
+  }, [])
+  return <dialog ref={dialog} className="cash-sheet" aria-labelledby="cash-title" onCancel={e => { if (busy) e.preventDefault(); else onCancel() }}>
+    <form onSubmit={e => { e.preventDefault(); if (change !== null && !busy) onConfirm() }}>
+      <div className="cash-heading"><div><div className="eyebrow">รับชำระเงิน</div><h2 id="cash-title">รับเงินสด</h2></div><button type="button" className="btn ghost" disabled={busy} onClick={onCancel} aria-label="ปิดรับเงินสด">×</button></div>
+      <div className="cash-due"><span>ยอดคงเหลือ</span><strong className="tnum">{baht(outstanding)}</strong></div>
+      <label htmlFor="cash-received">รับเงิน (บาท)</label>
+      <input id="cash-received" name="cash-received" inputMode="decimal" value={received} onChange={e => setReceived(e.target.value)} autoFocus autoComplete="off" placeholder="เช่น 1000" aria-describedby="cash-change" />
+      <div id="cash-change" className="cash-change" aria-live="polite"><span>เงินทอน</span><strong className="tnum">{change === null ? '—' : baht(change)}</strong></div>
+      {received && change === null && <p className="pin-err">กรอกยอดรับให้ครบยอดคงเหลือ (ทศนิยมไม่เกิน 2 ตำแหน่ง)</p>}
+      <button className="btn" type="submit" disabled={busy || change === null}>{busy ? 'กำลังบันทึก…' : `ยืนยันรับเงิน ${baht(outstanding)}`}</button>
+    </form>
+  </dialog>
+}
+
 /* ───────────────────────── Ticket / checkout ───────────────────────── */
 function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   // owner-on-phone = read-only summary: hide all mutate controls
@@ -1821,6 +1860,8 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   const [loadErr, setLoadErr] = useState('') // §v1.4 — 403 = someone else's bill (staff)
   const [services, setServices] = useState([])
   const [busy, setBusy] = useState(false)
+  const [cashOpen, setCashOpen] = useState(false)
+  const paymentInFlight = useRef(false)
   const [bolt, setBolt] = useState(null) // Beam Bolt card/QR panel: { payment_id, boltIntentId, deepLinkUrl, mode, mock } | null
   const [boltErr, setBoltErr] = useState('') // inline Bolt failure message (failure enum)
   const [boltPaired, setBoltPaired] = useState(false) // shop has a paired EDC device → default PAIRING + offer QR fallback
@@ -1957,7 +1998,7 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   const total = N(t.total)
   const paid = N(t.paid)
   const isPaid = paid >= total && total > 0
-  const outstanding = Math.max(0, total - paid) || total // amount still due (fallback to total)
+  const outstanding = outstandingAmount(total, paid)
   const isClosed = t.status === 'closed'
   const items = t.items || []
   // #35 wizard mode. readOnly (ownerPhone) keeps its own read-only summary path.
@@ -2194,14 +2235,14 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   const sendQuote = () => {
     setBusy(true)
     api.sendQuote(id)
-      .then((d) => { setT(d); setBusy(false); flash('ส่งสรุปราคาทาง LINE แล้ว') })
+      .then((d) => { setT(d); setBusy(false); flash(d.line_mock ? 'โหมดสาธิต — ยังไม่ได้ส่ง LINE จริง' : 'ส่งสรุปราคาทาง LINE แล้ว') })
       .catch((e) => { setBusy(false); flash('ส่งไม่สำเร็จ: ' + e.message) })
   }
 
   const confirmQuote = () => {
     setBusy(true)
     api.confirmQuote(id)
-      .then((d) => { setT(d); setBusy(false); flash('ลูกค้ายืนยันแล้ว') })
+      .then((d) => { setT(d); setBusy(false); flash(d.line_mock ? 'บันทึกยืนยันหน้าร้าน (สาธิต)' : 'ลูกค้ายืนยันแล้ว') })
       .catch((e) => { setBusy(false); flash('ยืนยันไม่สำเร็จ: ' + e.message) })
   }
 
@@ -2216,10 +2257,12 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   }
 
   const doPay = (method) => {
+    if (paymentInFlight.current || busy) return
+    paymentInFlight.current = true
     setBusy(true)
-    api.pay(id, { method, amount: total })
+    api.pay(id, { method, amount: outstanding })
       .then((d) => {
-        setT(d); setBusy(false)
+        setT(d); setBusy(false); setCashOpen(false)
         // §issue#31 Part 4 — server auto-closes once fully paid → bounce back.
         if (d.status === 'closed') { flash('ชำระครบ — ปิดบิลแล้ว'); onClosed && onClosed() }
         else flash(method === 'cash' ? 'ชำระเงินสดสำเร็จ' : 'บันทึกเป็นค้างชำระแล้ว')
@@ -2230,6 +2273,7 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
         // refresh to capture any payment row the backend may have stored
         refresh().catch(() => {})
       })
+      .finally(() => { paymentInFlight.current = false })
   }
 
   /* ── Beam Bolt deep-link PoC ──────────────────────────────
@@ -2320,6 +2364,17 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   }
   const retryBolt = () => { const mode = bolt && bolt.mode; const pm = bolt && bolt.paymentMethodType; setBolt(null); setBoltErr(''); startBolt(mode, pm) }
 
+  const workAction = async action => {
+    setBusy(true)
+    try { setT(await (action === 'finish' ? api.finishTicket(id) : api.extendTicket(id))) }
+    catch(e) { flash(e.message) } finally { setBusy(false) }
+  }
+  const cancelPending = async pid => {
+    setBusy(true)
+    try { const d = await api.cancelBoltIntent(id, pid); setT(d.ticket) }
+    catch(e) { flash(e.message); refresh().catch(() => {}) } finally { setBusy(false) }
+  }
+  const pendingCard = payments.some(p => p.method === 'beam_edc' && p.status === 'pending')
   const closeBill = () => {
     setBusy(true)
     api.close(id)
@@ -2333,7 +2388,7 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
   }
 
   return (
-    <>
+    <div className="checkout-view">
       {/* header card */}
       <div className="card">
         <div className="row">
@@ -2345,6 +2400,11 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
           </div>
           <StatusBadge status={t.status} />
         </div>
+        {!readOnly && t.status === 'in_progress' && <div className="work-actions">
+          {t.busy_until && new Date(t.busy_until) < new Date() && <span className="badge failed">เกินเวลา</span>}
+          <button className="btn secondary" disabled={busy} onClick={() => workAction('extend')}>+10 นาที</button>
+          <button className="btn" disabled={busy} onClick={() => workAction('finish')}>เสร็จงาน</button>
+        </div>}
         {t.busy_until && (
           <div className="meta" style={{ marginTop: 8 }}>
             <Icon name="clock" size={14} className="ico-inline" /> เสร็จโดยประมาณ {fmtTime(t.busy_until)}
@@ -2513,7 +2573,9 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
         ))
       ) : (
         items.map((it) => (
-          <div className="card" key={it.id}>
+          <details className="card item-editor" key={it.id}>
+            <summary><span className="grow"><strong>{it.service_name}</strong><span className="meta"> ×{N(it.qty)} · {N(it.minutes)} นาที · แตะเพื่อแก้ไข / ส่วนลด</span></span><strong className="tnum">{baht(it.net)}</strong></summary>
+            <div className="editor-fields">
             <div className="row">
               <div className="grow">
                 <div className="name">{it.service_name} {it.is_custom && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>ตามสั่ง</span>} {it.is_staff_price && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>ราคาพนักงาน</span>} {it.category && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>{it.category}</span>}</div>
@@ -2613,7 +2675,8 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
                 })}
               </>
             )}
-          </div>
+            </div>
+          </details>
         ))
       )}
 
@@ -2736,14 +2799,14 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
 
       {/* #35 WORKING / PAY VIEW (started) + ownerPhone read-only summary (non-build) */}
       {!building && (
-        <>
+        <div className="checkout-columns"><section className="checkout-items" aria-label="รายการในบิล">
           {/* read-only items list */}
           <div className="section-title">รายการในบิล</div>
           {items.length === 0 ? (
             <div className="empty">ยังไม่มีรายการ</div>
           ) : (
             items.map((it) => (
-              <div className="li" key={it.id}>
+              <button type="button" className="li" key={it.id} disabled={readOnly || busy} onClick={() => { setEditing(true); setStep(2) }}>
                 <div className="grow">
                   <div className="name">{it.service_name} {it.is_custom && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>ตามสั่ง</span>} {it.is_staff_price && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>ราคาพนักงาน</span>} {it.category && <span className="cat" style={{ fontSize: 12, color: 'var(--rose-dark)', background: 'var(--rose-soft)', padding: '2px 8px', borderRadius: 6 }}>{it.category}</span>}</div>
                   <div className="meta">จำนวน <span className="tnum">{N(it.qty)}</span> · <Icon name="clock" size={14} className="ico-inline" /> <span className="tnum">{N(it.minutes)}</span> นาที</div>
@@ -2756,7 +2819,7 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
                     </>
                   ) : baht(N(it.quoted_price) * N(it.qty))}
                 </div>
-              </div>
+              </button>
             ))
           )}
 
@@ -2785,10 +2848,13 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
             <div className="meta center" style={{ marginTop: 2 }}><Icon name="clock" size={14} className="ico-inline" /> ~<span className="tnum">{estMinutes}</span> นาที</div>
           )}
 
+        </section><section className="checkout-payment" aria-label="รับชำระเงิน">
       {/* LINE QUOTE STEP */}
       {!(readOnly && !quote) && <div className="section-title">สรุปราคาทาง LINE</div>}
+      {t.line_mock && <p className="integration-note">โหมดสาธิต — ยังไม่ได้ส่ง LINE จริง</p>}
+      {!t.member?.line_user_id && !readOnly && <p className="meta">สมาชิกยังไม่มี LINE ID — เพิ่มข้อมูลสมาชิกก่อนส่ง</p>}
       {readOnly && !quote ? null : !quote ? (
-        <button className="btn dark" disabled={busy || items.length === 0} onClick={sendQuote}>
+        <button className="btn dark" disabled={busy || items.length === 0 || !t.member?.line_user_id} onClick={sendQuote}>
           <Icon name="send" size={20} /> ส่งสรุปราคาทาง LINE
         </button>
       ) : (
@@ -2803,16 +2869,16 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
               <b>รวม {baht(N(quote.quoted_total) || total)}</b>
             </div>
             {quote.confirmed_at ? (
-              <div className="line-bubble" style={{ marginTop: 8 }}>ยืนยันค่ะ ✅</div>
+              <div className="line-bubble" style={{ marginTop: 8 }}>{t.line_mock ? 'ตัวอย่างการยืนยันหน้าร้าน' : 'ยืนยันค่ะ ✅'}</div>
             ) : (
-              <div className="muted center" style={{ fontSize: 12, marginTop: 8, color: '#fff' }}>ส่งเมื่อ {fmtDate(quote.sent_at)} · รอลูกค้ายืนยัน</div>
+              <div className="muted center" style={{ fontSize: 12, marginTop: 8, color: '#fff' }}>{t.line_mock ? 'สร้างตัวอย่างเมื่อ' : 'ส่งเมื่อ'} {fmtDate(quote.sent_at)} · {t.line_mock ? 'ยังไม่ได้ส่ง LINE จริง' : 'รอลูกค้ายืนยัน'}</div>
             )}
           </div>
           {quote.confirmed_at ? (
-            <div className="center muted" style={{ marginTop: 10 }}>ลูกค้ายืนยันแล้ว <Icon name="check-circle" size={16} className="ico-inline ico-ok" /> ({fmtDate(quote.confirmed_at)})</div>
+            <div className="center muted" style={{ marginTop: 10 }}>{t.line_mock ? 'บันทึกยืนยันหน้าร้าน (สาธิต)' : 'ลูกค้ายืนยันแล้ว'} <Icon name="check-circle" size={16} className="ico-inline ico-ok" /> ({fmtDate(quote.confirmed_at)})</div>
           ) : readOnly ? null : (
             <div className="btn-row">
-              <button className="btn" disabled={busy} onClick={confirmQuote}><Icon name="check" size={20} /> ลูกค้า Confirm</button>
+              <button className="btn" disabled={busy} onClick={confirmQuote}><Icon name="check" size={20} /> {t.line_mock ? 'บันทึกยืนยันหน้าร้าน (สาธิต)' : 'ลูกค้า Confirm'}</button>
             </div>
           )}
         </>
@@ -2850,6 +2916,7 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
                         {canRetry && (
                           <button className="btn secondary" style={{ width: 'auto', padding: '8px 14px' }} disabled={busy} onClick={() => retryPay(p)}><Icon name="rotate-ccw" size={20} /> {isBolt ? 'เช็คสถานะ' : 'ลองรูดอีกครั้ง'}</button>
                         )}
+                        {isBolt && st === 'pending' && <button className="btn ghost" disabled={busy} onClick={() => cancelPending(p.id)}>ยกเลิกรายการบัตร</button>}
                         {canManage && (
                           <button className="btn ghost" style={{ width: 'auto', padding: '8px 14px' }} disabled={busy} onClick={() => voidPay(p)}>ยกเลิก</button>
                         )}
@@ -2867,6 +2934,7 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
             </div>
           )}
 
+          {!readOnly && pendingCard && !bolt && <p className="note-warn">มีรายการบัตรรอผล — เช็คสถานะหรือยกเลิกก่อนรับเงินใหม่</p>}
           {!readOnly && !isPaid && (
             bolt ? (
               <div className="card">
@@ -2956,18 +3024,18 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
               </div>
             ) : (
               <div className="pay-grid">
-                <button type="button" className="pay" onClick={() => doPay('cash')}>
+                <button type="button" className="pay" disabled={busy || pendingCard || outstanding <= 0} onClick={() => setCashOpen(true)}>
                   <div className="ico"><Icon name="banknote" size={20} /></div>
-                  <div className="grow"><div>เงินสด</div><div className="desc">รับเป็นเงินสด</div></div>
-                  <div className="price tnum">{baht(total)}</div>
+                  <div className="grow"><div>เงินสด</div><div className="desc">รับยอดคงเหลือ · คำนวณเงินทอน</div></div>
+                  <div className="price tnum">{baht(outstanding)}</div>
                 </button>
                 {boltPaired ? (
                   <>
-                    <button type="button" className="pay" onClick={() => startBolt('PAIRING', 'CARD')}>
+                    <button type="button" className="pay" disabled={busy || pendingCard || outstanding <= 0} onClick={() => startBolt('PAIRING', 'CARD')}>
                       <div className="ico"><Icon name="credit-card" size={20} /></div>
                       <div className="grow"><div>บัตร (รูดที่เครื่อง EDC)</div><div className="desc">เสียบ/แตะบัตรที่เครื่องที่จับคู่ไว้</div></div>
                     </button>
-                    <button type="button" className="pay" onClick={() => startBolt('PAIRING', 'QR_PROMPT_PAY')}>
+                    <button type="button" className="pay" disabled={busy || pendingCard || outstanding <= 0} onClick={() => startBolt('PAIRING', 'QR_PROMPT_PAY')}>
                       <div className="ico"><Icon name="qr-code" size={20} /></div>
                       <div className="grow"><div>QR ที่เครื่อง EDC</div><div className="desc">โชว์ QR PromptPay บนหน้าจอเครื่อง</div></div>
                     </button>
@@ -2977,7 +3045,7 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
                     ⚠️ ต้อง pair เครื่อง EDC ก่อนถึงรับบัตร/QR ได้ (ตอนนี้รับเงินสด/ค้างชำระได้)
                   </div>
                 )}
-                <button type="button" className="pay" onClick={() => doPay('unpaid')}>
+                <button type="button" className="pay" disabled={busy || pendingCard || outstanding <= 0} onClick={() => doPay('unpaid')}>
                   <div className="ico"><Icon name="clock" size={20} /></div>
                   <div className="grow"><div>ค้างชำระ</div><div className="desc">ไว้จ่ายภายหลัง</div></div>
                 </button>
@@ -3004,8 +3072,15 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
               <button className="btn ghost" disabled={busy} onClick={() => { setEditing(true); setStep(1) }}><Icon name="pencil" size={20} /> แก้ไข bill</button>
             </div>
           )}
-        </>
+        </section></div>
       )}
+
+      {!readOnly && items.length > 0 && <div className="checkout-sticky">
+        <div><span className="meta">{building ? 'ยอดสุทธิ' : 'ยอดคงเหลือ'}</span><strong className="tnum">{baht(building ? total : outstanding)}</strong></div>
+        {building ? <button className="btn" disabled={busy} onClick={() => editing && step === 2 ? setEditing(false) : step < 3 ? setStep(step + 1) : startWork()}>{editing && step === 2 ? 'เสร็จสิ้น' : step === 1 ? 'สรุปรายการ' : step === 2 ? 'เลือกช่าง / เริ่มงาน' : 'เริ่มทำงาน'}</button>
+          : <button className="btn" disabled={busy || pendingCard || outstanding <= 0} onClick={() => setCashOpen(true)}>รับเงินสด</button>}
+      </div>}
+      {cashOpen && <CashSheet outstanding={outstanding} busy={busy} onConfirm={() => doPay('cash')} onCancel={() => { if (!busy) setCashOpen(false) }} />}
 
       {/* OWNER-PIN OVERRIDE MODAL — shared by wizard (bill/item discount + staff price) */}
       {pendingOverride && (
@@ -3028,7 +3103,7 @@ function TicketView({ id, flash, isOwner, canManage, ownerPhone, onClosed }) {
       )}
 
       <div className="spacer" />
-    </>
+    </div>
   )
 }
 
