@@ -109,17 +109,17 @@ export async function createSession(q, user) {
   return token;
 }
 
-// Resolve a token → session snapshot, or null when missing/expired. Expired
+// Resolve a token using the current active user, or null. Expired/inactive
 // rows are deleted lazily on lookup so the table self-prunes.
 export async function getSession(q, token) {
   if (!token) return null;
   const row = (await q(
-    `SELECT token, user_id, name, role, store_id, expires_at
-       FROM app_session WHERE token=$1`,
+    `SELECT s.token, s.user_id, u.name, u.role, u.store_id, s.expires_at, u.active
+       FROM app_session s LEFT JOIN app_user u ON u.id=s.user_id WHERE s.token=$1`,
     [token],
   )).rows[0];
   if (!row) return null;
-  if (new Date(row.expires_at).getTime() <= Date.now()) {
+  if (!row.active || new Date(row.expires_at).getTime() <= Date.now()) {
     await q('DELETE FROM app_session WHERE token=$1', [token]);
     return null;
   }
