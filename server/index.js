@@ -1,4 +1,6 @@
 import express from 'express';
+import 'express-async-errors';
+import { validAmount, validateDateRange } from './validation.js';
 import pg from 'pg';
 import multer from 'multer';
 import {
@@ -803,7 +805,7 @@ app.get('/api/audit', requireOwner, async (req, res) => {
 // payments with status='success' (cash on the spot, EDC after it succeeds);
 // 'unpaid' rows stay pending and are reported separately as outstanding.
 // All aggregation is in SQL (store-scoped), nothing pulls whole tables into JS.
-app.get('/api/reports', requireOwner, async (req, res) => {
+app.get('/api/reports', requireOwner, validateDateRange, async (req, res) => {
   const storeId = req.user.storeId;
   // Validate dates; default both to today. Range is [from 00:00, to+1day 00:00).
   const dateRe = /^\d{4}-\d{2}-\d{2}$/;
@@ -1481,7 +1483,7 @@ app.get('/api/members/:id', async (req, res) => {
   res.json({ ...m, history });
 });
 
-app.get('/api/tickets', async (req, res) => {
+app.get('/api/tickets', validateDateRange, async (req, res) => {
   // §v0.8 store-scoped · §v1.4 staff see only their own bills (assigned/created_by).
   // §issue#43 — filter: ?status=pending|closed|all (default pending) + ?from&?to (date
   //   range on created_at). The BARE default call (no params) = pending, no date — this
@@ -1957,6 +1959,8 @@ app.post('/api/tickets/:id/payments', async (req, res) => {
   const ticket = await guardTicket(req, res); // §v1.4 staff → own bills only
   if (!ticket) return;
   const { method, amount, simulate } = req.body;
+  if (!validAmount(amount))
+    return res.status(400).json({ error: 'amount must be a positive number with at most two decimal places' });
   if (!['cash', 'beam_edc', 'unpaid'].includes(method))
     return res.status(400).json({ error: 'bad method' });
   const seq = (await q(
@@ -2087,7 +2091,10 @@ app.post('/api/tickets/:id/bolt-intent', requireAuth, async (req, res) => {
   }
 
   const amount =
-    req.body?.amount ?? (Number(ticket.total) - Number(ticket.paid)) ?? ticket.total;
+    req.body?.amount === undefined
+      ? round2(Number(ticket.total) - Number(ticket.paid)) : req.body.amount;
+  if (!validAmount(amount))
+    return res.status(400).json({ error: 'amount must be a positive number with at most two decimal places' });
 
   const seq = (await q(
     'SELECT COALESCE(MAX(payment_seq),0)+1 AS n FROM payment WHERE ticket_id=$1',
@@ -2393,6 +2400,13 @@ app.get('/api/queue', async (req, res) => {
 const clientDir = join(__dirname, '../client/dist');
 app.use(express.static(clientDir));
 app.get('*', (_req, res) => res.sendFile(join(clientDir, 'index.html')));
+
+// express-async-errors forwards rejected route/middleware promises here too.
+app.use((err, req, res, next) => {
+  console.error('[request failed]', req.method, req.path, err);
+  if (res.headersSent) return next(err);
+  res.status(err.status === 400 ? 400 : 500).json({ error: err.status === 400 ? 'bad request' : 'internal server error' });
+});
 
 withRetry(bootstrap).then(() => {
   app.listen(PORT, () => console.log(`[lazy-pos] listening on :${PORT}`));
