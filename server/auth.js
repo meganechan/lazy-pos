@@ -35,6 +35,57 @@ export function verifyPin(pin, stored) {
   return timingSafeEqual(actual, expected);
 }
 
+// ---- Login throttle (PIN brute-force guard) ----
+//
+// Keyed by canonical integer userId, not IP: behind Coolify's proxy every
+// request shares one req.ip, so a per-IP limit would throttle the whole salon.
+// Each login RESERVES an attempt synchronously before any await, so concurrent
+// requests cannot all slip past the check; a successful login (or an id with
+// no user) releases it. LOGIN_MAX_ATTEMPTS unreleased attempts inside
+// LOGIN_WINDOW_MS → 429 until the window rolls over. Short window on purpose —
+// user ids are public (/api/auth/users), so a long lockout would let anyone
+// lock staff out.
+// ponytail: in-memory Map, single process only; move to a DB table if the app
+// ever runs >1 replica.
+export const LOGIN_MAX_ATTEMPTS = 5;
+export const LOGIN_WINDOW_MS = 5 * 60 * 1000;
+const SWEEP_AT = 1000;
+const loginAttempts = new Map(); // userId(int) -> { count, since }
+
+// Public JSON userId → positive safe integer, or null. "01", " 1", "+1" all
+// become 1 so aliases share one counter (Postgres casts them to the same id).
+export function canonicalUserId(raw) {
+  if (raw == null || raw === '' || typeof raw === 'boolean') return null;
+  const id = Number(raw);
+  // app_user.id is int4 — larger values make the pg query throw.
+  return Number.isInteger(id) && id > 0 && id <= 2147483647 ? id : null;
+}
+
+// Reserve one attempt for `id`. Returns false (→ 429) when the cap is reached.
+export function takeLoginAttempt(id, now = Date.now()) {
+  if (loginAttempts.size >= SWEEP_AT) {
+    for (const [k, e] of loginAttempts) {
+      if (now - e.since >= LOGIN_WINDOW_MS) loginAttempts.delete(k);
+    }
+  }
+  const e = loginAttempts.get(id);
+  if (!e || now - e.since >= LOGIN_WINDOW_MS) {
+    loginAttempts.set(id, { count: 1, since: now });
+    return true;
+  }
+  if (e.count >= LOGIN_MAX_ATTEMPTS) return false;
+  e.count++;
+  return true;
+}
+
+export function clearLoginAttempts(id) {
+  loginAttempts.delete(id);
+}
+
+export function loginAttemptsSize() {
+  return loginAttempts.size;
+}
+
 // ---- DB-backed session store (durable across restart / deploy) ----
 //
 // Sessions live in the app_session table so a deploy no longer logs everyone

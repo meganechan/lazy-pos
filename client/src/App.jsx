@@ -3358,7 +3358,9 @@ function Login({ onLoggedIn }) {
       .catch((e) => {
         setBusy(false)
         setPin('')
-        setErr(e.status === 401 ? 'PIN ไม่ถูกต้อง' : 'เข้าสู่ระบบไม่สำเร็จ')
+        setErr(e.status === 401 ? 'PIN ไม่ถูกต้อง'
+          : e.status === 429 ? 'ใส่ PIN ผิดหลายครั้ง รอ 5 นาทีแล้วลองใหม่'
+          : 'เข้าสู่ระบบไม่สำเร็จ')
       })
   }
 
