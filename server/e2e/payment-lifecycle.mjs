@@ -76,3 +76,16 @@ test('pending/failed cancel to voided; late success only revives failed',async()
   await webhook(p,'EXPIRED');assert.equal((await row(p.payment_id)).status,'failed');
   await webhook(p,'PAID');assert.equal((await row(p.payment_id)).status,'success');
 });
+
+test('pending card blocks cash/new intent until cancel; concurrent intents serialize',async()=>{
+  const id=await ticket();
+  const responses=await Promise.all([bolt(id),bolt(id)]);
+  assert.deepEqual(responses.map(r=>r.status).sort(),[200,409]);
+  assert.equal(responses.find(r=>r.status===409).body.error,'pending_card_payment');
+  const p=responses.find(r=>r.status===200).body;
+  const cash=await payment(id);assert.equal(cash.status,409);assert.equal(cash.body.error,'pending_card_payment');
+  assert.equal((await h.request(`/api/tickets/${id}`)).body.paid,0);
+  assert.equal((await h.request(`/api/tickets/${id}/bolt-intent/${p.payment_id}/cancel`,{})).status,200);
+  assert.equal((await payment(id)).status,200);
+  assert.equal((await h.request(`/api/tickets/${id}`)).body.paid,100);
+});

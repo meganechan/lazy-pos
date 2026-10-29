@@ -430,8 +430,11 @@ async function withTicketLock(ticketId, storeId, work) {
   } finally { client.release(); }
 }
 
-async function paymentBalance(query, ticket) {
+async function paymentBalance(query, ticket, checkPending = true) {
   if (ticket.status === 'closed' || ticket.voided_at) throw conflict('ticket_closed');
+  if (checkPending && (await query(
+    "SELECT 1 FROM payment WHERE ticket_id=$1 AND method='beam_edc' AND status='pending' LIMIT 1",
+    [ticket.id])).rowCount) throw conflict('pending_card_payment');
   const detail = await ticketDetail(ticket.id, ticket.store_id, query);
   const outstanding = round2(Math.max(0, detail.total - detail.paid));
   if (outstanding === 0) throw conflict('amount_exceeds_outstanding');
@@ -2017,7 +2020,7 @@ app.post('/api/tickets/:id/payments', async (req, res) => {
     return res.status(400).json({ error: 'use_bolt_intent' });
 
   const p = await withTicketLock(req.params.id, req.user.storeId, async (query, locked) => {
-    const outstanding = await paymentBalance(query, locked);
+    const outstanding = await paymentBalance(query, locked, method !== 'unpaid');
     if (method !== 'unpaid' && amount > outstanding) throw conflict('amount_exceeds_outstanding');
     const seq = (await query(
       'SELECT COALESCE(MAX(payment_seq),0)+1 AS n FROM payment WHERE ticket_id=$1',
