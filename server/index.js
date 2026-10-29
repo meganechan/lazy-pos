@@ -1,4 +1,5 @@
 import express from 'express';
+import { BUSINESS_TIME_ZONE } from './business-time.js';
 import 'express-async-errors';
 import { validAmount, validateDateRange } from './validation.js';
 import pg from 'pg';
@@ -41,6 +42,8 @@ const lineAdapter = createLineAdapter(process.env);
 const IDEMPOTENCY_REUSE_WINDOW_MS = 12 * 60 * 60 * 1000; // 12 hours
 const { Pool } = pg;
 const pool = new Pool({
+  // Apply the business day to every pooled connection (date casts, CURRENT_DATE).
+  options: `-c timezone=${BUSINESS_TIME_ZONE}`,
   connectionString:
     process.env.DATABASE_URL ||
     'postgres://lazy:lazy@localhost:5432/lazypos',
@@ -612,39 +615,44 @@ app.post('/api/auth/signup', async (req, res) => {
       error: 'shop_name, owner_name and a 4-6 digit owner_pin are required',
     });
 
-  // Create the store with a unique shop code (retry on rare code collision).
-  let store = null;
-  for (let attempt = 0; attempt < 5 && !store; attempt++) {
-    const code = randomShopCode();
-    try {
-      store = (await q(
-        'INSERT INTO store (name, code) VALUES ($1,$2) RETURNING id, code, name',
-        [shopName, code])).rows[0];
-    } catch (e) {
-      if (e.code === '23505') continue; // unique_violation on store_code_uniq
-      throw e;
+  const client = await pool.connect();
+  const query = (text, params) => client.query(text, params);
+  try {
+    await query('BEGIN');
+    // Create the store with a unique shop code (retry on rare code collision).
+    let store = null;
+    for (let attempt = 0; attempt < 5 && !store; attempt++) {
+      const code = randomShopCode();
+      store = (await query(
+          'INSERT INTO store (name, code) VALUES ($1,$2) ON CONFLICT (code) DO NOTHING RETURNING id, code, name',
+          [shopName, code])).rows[0];
+
     }
-  }
-  if (!store)
-    return res.status(500).json({ error: 'could not allocate a unique shop code' });
+    if (!store)
+      throw new Error('could not allocate a unique shop code');
 
-  // Owner user for the new store (scrypt-hashed PIN).
-  const owner = (await q(
-    `INSERT INTO app_user (store_id, name, role, pin_hash)
-     VALUES ($1,$2,'owner',$3) RETURNING id`,
-    [store.id, ownerName, hashPin(pinStr)])).rows[0];
+    // Owner user for the new store (scrypt-hashed PIN).
+    const owner = (await query(
+      `INSERT INTO app_user (store_id, name, role, pin_hash)
+       VALUES ($1,$2,'owner',$3) RETURNING id`,
+      [store.id, ownerName, hashPin(pinStr)])).rows[0];
 
-  // Seed the default service catalog into the new store (usable immediately).
-  for (const [name, category, base_price, duration_min] of DEFAULT_SERVICES) {
-    await q(
-      `INSERT INTO service (store_id, name, category, base_price, duration_min)
-       VALUES ($1,$2,$3,$4,$5)`,
-      [store.id, name, category, base_price, duration_min]);
-  }
+    // Seed the default service catalog into the new store (usable immediately).
+    for (const [name, category, base_price, duration_min] of DEFAULT_SERVICES) {
+      await query(
+        `INSERT INTO service (store_id, name, category, base_price, duration_min)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [store.id, name, category, base_price, duration_min]);
+    }
 
-  await audit(owner.id, store.id, 'shop_signup', 'store', store.id,
-    { shop_name: store.name, code: store.code, owner_name: ownerName });
-  res.json({ ok: true, store: { id: store.id, code: store.code, name: store.name } });
+    await audit(owner.id, store.id, 'shop_signup', 'store', store.id,
+      { shop_name: store.name, code: store.code, owner_name: ownerName }, query);
+    await query('COMMIT');
+    res.json({ ok: true, store: { id: store.id, code: store.code, name: store.name } });
+  } catch (error) {
+    await query('ROLLBACK');
+    throw error;
+  } finally { client.release(); }
 });
 
 // ---- Beam Bolt webhook receiver (PUBLIC — no session) ----
@@ -891,11 +899,31 @@ app.get('/api/reports', requireOwner, validateDateRange, async (req, res) => {
       WHERE ${payWhere}`, params)).rows[0];
   const paid_bills = paidBillsRow.n;
 
-  // 3) Outstanding (unpaid bills still pending) in the ticket range.
+  // Receivable = discounted ticket net minus ALL successful payments. Pending
+  // unpaid markers are reminders, not an additional amount owed after settlement.
   const outstanding = (await q(
-    `SELECT COUNT(*)::int AS count, COALESCE(SUM(p.amount),0)::float AS amount
-       FROM payment p JOIN ticket t ON t.id = p.ticket_id
-      WHERE p.method='unpaid' AND p.status='pending' AND ${tWhere}`,
+    `WITH balances AS (
+       SELECT GREATEST(0, items.subtotal - CASE
+         WHEN t.discount_type='percent' THEN ROUND(items.subtotal * LEAST(GREATEST(COALESCE(t.discount_value,0),0),100)/100,2)
+         WHEN t.discount_type='baht' THEN ROUND(LEAST(GREATEST(COALESCE(t.discount_value,0),0),items.subtotal),2)
+         ELSE 0 END - paid.amount) AS balance
+       FROM ticket t
+       CROSS JOIN LATERAL (
+         SELECT COALESCE(SUM(ti.quoted_price*ti.qty - CASE
+           WHEN ti.discount_type='percent' THEN ROUND(ti.quoted_price*ti.qty * LEAST(GREATEST(COALESCE(ti.discount_value,0),0),100)/100,2)
+           WHEN ti.discount_type='baht' THEN ROUND(LEAST(GREATEST(COALESCE(ti.discount_value,0),0),ti.quoted_price*ti.qty),2)
+           ELSE 0 END),0) AS subtotal
+         FROM ticket_item ti WHERE ti.ticket_id=t.id
+       ) items
+       CROSS JOIN LATERAL (
+         SELECT COALESCE(SUM(p.amount),0) AS amount FROM payment p
+         WHERE p.ticket_id=t.id AND p.status='success'
+       ) paid
+       WHERE ${tWhere}
+         AND (t.status='closed' OR EXISTS (SELECT 1 FROM payment marker
+           WHERE marker.ticket_id=t.id AND marker.method='unpaid'))
+     ) SELECT COUNT(*) FILTER (WHERE balance>0)::int AS count,
+              COALESCE(SUM(balance),0)::float AS amount FROM balances`,
     params)).rows[0];
 
   // 4) By staff — attribute each success payment to the ticket's tech

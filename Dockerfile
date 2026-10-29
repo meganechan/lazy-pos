@@ -4,6 +4,7 @@ WORKDIR /app/client
 COPY client/package.json client/package-lock.json ./
 RUN npm ci
 COPY client/ ./
+COPY server/business-time.js /app/server/business-time.js
 RUN npm run build
 
 # ---- stage 2: server + built client ----
