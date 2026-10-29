@@ -2396,8 +2396,8 @@ app.delete('/api/tickets/:id', requireOwner, async (req, res) => {
 });
 
 // §v0.6 — Queue board. Computed live from app_user + ticket. A technician is
-// "busy" iff there is an in_progress ticket assigned to them with started_at set
-// whose busy_until (started_at + est_minutes*60000) is still in the future.
+// An assigned in_progress ticket keeps its technician busy until finished or paid.
+// ETA is advisory: passing it marks an overrun without releasing the technician.
 app.get('/api/queue', async (req, res) => {
   const now = Date.now();
   const storeId = req.user.storeId;

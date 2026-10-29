@@ -84,11 +84,11 @@ fs.mkdirSync(out, { recursive: true });
       // Lists distinguish a failed load from empty data and recover via Retry.
       for(const [tab,endpoint,message] of [['members','members','โหลดสมาชิกไม่สำเร็จ'],['tickets','tickets','โหลดบิลไม่สำเร็จ']]) {
         let fail=true;
-        await page.route(`**/api/${endpoint}?*`,route=>{if(fail){fail=false;return route.fulfill({status:503,contentType:'application/json',body:'{"error":"local injected failure"}'});}return route.continue();});
-        await page.route(`**/api/${endpoint}`,route=>{if(fail){fail=false;return route.fulfill({status:503,contentType:'application/json',body:'{"error":"local injected failure"}'});}return route.continue();});
+        await page.route(`**/api/${endpoint}?*`,route=>{if(fail && (endpoint !== 'tickets' || new URL(route.request().url()).searchParams.has('status'))){fail=false;return route.fulfill({status:503,contentType:'application/json',body:'{"error":"local injected failure"}'});}return route.continue();});
+        await page.route(`**/api/${endpoint}`,route=>{if(fail && (endpoint !== 'tickets' || new URL(route.request().url()).searchParams.has('status'))){fail=false;return route.fulfill({status:503,contentType:'application/json',body:'{"error":"local injected failure"}'});}return route.continue();});
         await page.goto(`${base}/?tab=${tab}`);await page.getByRole('alert').filter({hasText:message}).waitFor();
         await page.getByRole('button',{name:'ลองอีกครั้ง',exact:true}).click();
-        await page.getByText('คุณเมย์',{exact:true}).first().waitFor();
+        await page.getByText(tab === 'members' ? 'คุณเมย์' : 'ลูกค้าทั่วไป',{exact:true}).first().waitFor();
       }
       await page.getByRole('button',{name:'เปิดบิลใหม่',exact:true}).click();
       const labels=await page.getByRole('combobox').evaluateAll(nodes=>nodes.map(n=>n.labels.length));
