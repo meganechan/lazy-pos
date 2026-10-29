@@ -12,11 +12,17 @@ test('unpaid placeholder followed by cash is not outstanding',async()=>{
   const id=await ticket(350);await pay(id,350,'unpaid');await pay(id,350,'cash');
   assert.deepEqual((await h.request('/api/reports')).body.outstanding,{amount:0,count:0});
 });
-test('receivables include unmarked/partial discounted bills and exclude voids',async()=>{
+test('receivables include closed or marked partial bills, not active chairs or voids',async()=>{
   const id=await ticket(100);await h.request(`/api/tickets/${id}/discount`,{discount_type:'percent',discount_value:10},'PUT');
   await pay(id,30,'cash');
+  assert.deepEqual((await h.request('/api/reports')).body.outstanding,{amount:0,count:0});
+  await pay(id,60,'unpaid');
   const voided=await ticket(900);await h.request(`/api/tickets/${voided}`,undefined,'DELETE');
   assert.deepEqual((await h.request('/api/reports')).body.outstanding,{amount:60,count:1});
+  await h.db.query("UPDATE payment SET status='voided' WHERE ticket_id=$1 AND method='unpaid'",[id]);
+  assert.deepEqual((await h.request('/api/reports')).body.outstanding,{amount:60,count:1},'explicit unpaid marker counts in any status');
+  const closed=await ticket(40);await h.request(`/api/tickets/${closed}/close`,{});
+  assert.deepEqual((await h.request('/api/reports')).body.outstanding,{amount:100,count:2});
 });
 test('06:30 Bangkok payment and ticket are in the Thai business day, daily trend too',async()=>{
   const id=await ticket(123);await pay(id,123,'cash');

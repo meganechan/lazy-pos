@@ -920,6 +920,8 @@ app.get('/api/reports', requireOwner, validateDateRange, async (req, res) => {
          WHERE p.ticket_id=t.id AND p.status='success'
        ) paid
        WHERE ${tWhere}
+         AND (t.status='closed' OR EXISTS (SELECT 1 FROM payment marker
+           WHERE marker.ticket_id=t.id AND marker.method='unpaid'))
      ) SELECT COUNT(*) FILTER (WHERE balance>0)::int AS count,
               COALESCE(SUM(balance),0)::float AS amount FROM balances`,
     params)).rows[0];
