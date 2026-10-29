@@ -18,9 +18,11 @@ services:
     environment:
       DATABASE_URL: postgres://lazy:lazy@db:5432/lazypos
       PORT: 8080
-      # BEAM_API_KEY is referenced by the Beam adapter (mocked in this demo).
-      # Real value must come from a gitignored env / secret — never commit it.
-      BEAM_API_KEY: ${BEAM_API_KEY:-demo-not-set}
+      # Empty credentials use mock mode. Inject real values through secrets/env.
+      BEAM_BOLT_API_BASE: ${BEAM_BOLT_API_BASE:-https://playground.api.beamcheckout.com}
+      BEAM_BOLT_MERCHANT_ID: ${BEAM_BOLT_MERCHANT_ID:-}
+      BEAM_BOLT_API_KEY: ${BEAM_BOLT_API_KEY:-}
+      BEAM_WEBHOOK_SECRET: ${BEAM_WEBHOOK_SECRET:-}
     depends_on:
       db:
         condition: service_healthy
